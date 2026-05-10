@@ -19,6 +19,7 @@ defmodule SymphonyElixir.MixProject do
           # when those tests are re-enabled.
           SymphonyElixir.Config.Schema,
           SymphonyElixir.Config.Schema.Server,
+          SymphonyElixir.Linear.Adapter,
           SymphonyElixir.Linear.Client,
           SymphonyElixir.SpecsCheck,
           SymphonyElixir.Orchestrator,
@@ -118,7 +119,12 @@ defmodule SymphonyElixir.MixProject do
         "specs.check",
         "credo --strict"
       ],
-      test_strict: ["test --cover --warnings-as-errors --exclude skip_until_task_6"]
+      # live_github is excluded — those tests hit real GitHub and require
+      # GITHUB_TOKEN; run them locally via `mix test --only live_github`.
+      # Do NOT strip the exclusion: CI has no token and the suite would fail.
+      test_strict: [
+        "test --cover --warnings-as-errors --exclude skip_until_task_6 --exclude live_github"
+      ]
     ]
   end
 

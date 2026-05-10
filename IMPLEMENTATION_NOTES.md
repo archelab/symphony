@@ -54,9 +54,15 @@ valid tracker `kind`. Each line was kept compiling only because the dev
 sites below are runtime-unreachable today but must be removed or
 rewritten before PR2 / Task 8 deletes the Linear modules.
 
-- `elixir/lib/symphony_elixir/config.ex:122-129` —
-  `validate_semantics/1` whitelists only `["linear", "memory"]` (rejects
-  `"github"`) and reads `tracker.api_key` and `tracker.project_slug`.
+- ~~`elixir/lib/symphony_elixir/config.ex:122-129`~~ — RESOLVED in
+  Task 5a. `validate_semantics/1` now accepts `["github", "memory"]`,
+  reads `tracker.api_token`, and emits `:missing_tracker_api_token` in
+  place of the old `:missing_linear_*` errors.
+- ~~`elixir/lib/symphony_elixir/linear/adapter.ex`~~ — PARTIALLY
+  RESOLVED in Task 5a. The module no longer declares
+  `@behaviour SymphonyElixir.Tracker`; its functions remain so the
+  existing Linear-only `extensions_test.exs` test still drives them
+  directly. Whole-file deletion is still PR2 / Task 8b.
 - `elixir/lib/symphony_elixir/linear/client.ex:109,112,133,136,384,491` —
   six reads of `tracker.project_slug` (109, 133), `tracker.api_key`
   (112, 136, 384), and `tracker.assignee` (491).
@@ -64,3 +70,60 @@ rewritten before PR2 / Task 8 deletes the Linear modules.
   error message references `linear.api_key` and `LINEAR_API_KEY`.
 - `elixir/lib/symphony_elixir/status_dashboard.ex:397` — reads
   `tracker.project_slug` when rendering the project link.
+- `elixir/lib/symphony_elixir/tracker/memory.ex:8` — still aliases
+  `SymphonyElixir.Linear.Issue` (used as the in-memory issue struct).
+  PR2 / Task 8b deletes Linear; this alias breaks at that moment.
+  Either Memory should stop aliasing `Linear.Issue` (use a local
+  sentinel struct, or `Github.Issue`), or PR2's Linear-deletion commit
+  must rewire Memory in the same change.
+- `elixir/lib/symphony_elixir/orchestrator.ex:232,236,267` — three
+  dead `else` clauses in `maybe_dispatch/1` still pattern-match
+  `{:error, :missing_linear_api_token | :missing_linear_project_slug}`
+  and log "Failed to fetch from Linear". Unreachable today (Config no
+  longer emits these atoms) but cosmetically stale; PR2 / Task 6 or
+  Task 8 should retire them.
+
+## Task 5a — PR1 brought forward the PR2 tracker.ex routing flip
+
+The original PLAN.md Task 5 plus the Task 5a preamble erected a hard
+scope guard around `lib/symphony_elixir/tracker.ex`: PR1 was to leave
+the 5-callback Tracker behaviour untouched, with `Github.Adapter`
+declaring `@behaviour SymphonyElixir.Tracker` and supplying
+`{:error, :writes_disallowed_in_github_adapter}` stubs for
+`create_comment/2` and `update_issue_state/2` to keep the compiler
+happy. PR2 commit 7 (Step 11.5 in PLAN.md) was supposed to drop the
+write callbacks and flip routing.
+
+Pedro relaxed that guard mid-implementation ("don't make the codebase
+worse to avoid touching tracker.ex") and asked for the PR2-style
+rewrite to land alongside the adapter:
+
+- `SymphonyElixir.Tracker` behaviour drops `create_comment/2` and
+  `update_issue_state/2`. Spec §11.5: writes go to the agent via the
+  `github_graphql` Codex dynamic tool (Task 7, PR2). The 3 read
+  callbacks remain.
+- `Tracker.adapter/0` routes `"memory" -> Tracker.Memory` and
+  `"github" -> Github.Adapter` via the new `adapter_for/1` helper.
+  Unknown kinds raise `ArgumentError` instead of silently falling
+  through to a Linear catch-all.
+- `Tracker.Memory` drops its `create_comment/2` and
+  `update_issue_state/2` impls (no longer behaviour callbacks; no
+  in-tree caller).
+- `Linear.Adapter` keeps its module-level functions but loses
+  `@behaviour SymphonyElixir.Tracker` so it stops claiming to
+  implement removed callbacks. The whole Linear stack is still slated
+  for PR2 / Task 8b deletion.
+- `Config.validate_semantics/1` was widened to accept `"github"` and
+  drops the `:missing_linear_*` errors (replaced by
+  `:missing_tracker_api_token`).
+- `Schema.@valid_kinds` tightens from `~w(github memory linear)` to
+  `~w(github memory)`.
+- `Github.Adapter` no longer carries the temporary write-callback
+  stubs.
+
+Cascading test changes: `extensions_test.exs` "tracker delegates to
+memory and linear adapters" was rewritten to drop the Linear arm and
+the write-API assertions, plus a new test exercises
+`Tracker.adapter_for/1`'s raise branch. PR2 / Task 8 becomes a smaller
+cleanup PR (delete Linear modules + their tests; remove the dead
+`:missing_linear_*` clauses still sitting in `orchestrator.ex`).

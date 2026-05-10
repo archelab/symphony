@@ -1,0 +1,81 @@
+{
+  "data": {
+    "rateLimit": {"remaining": 4990, "resetAt": "2026-05-10T13:00:00Z"},
+    "node": {
+      "id": "PVT_kwDODDTPxM4BXSCK",
+      "title": "Symphony",
+      "number": 1,
+      "items": {
+        "pageInfo": {"hasNextPage": false, "endCursor": null},
+        "nodes": [
+          {
+            "id": "PVTI_iss1",
+            "type": "ISSUE",
+            "isArchived": false,
+            "createdAt": "2026-05-01T00:00:00Z",
+            "updatedAt": "2026-05-01T00:00:00Z",
+            "fieldValueByName": {"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "Agent Ready", "optionId": "5264dd8c"},
+            "content": {
+              "__typename": "Issue",
+              "id": "I_iss1", "number": 42, "title": "Refactor", "body": "do it",
+              "url": "https://github.com/archelab/symphony/issues/42",
+              "state": "OPEN", "createdAt": "2026-05-01T00:00:00Z", "updatedAt": "2026-05-01T00:00:00Z",
+              "repository": {"nameWithOwner": "archelab/symphony", "owner": {"login": "archelab"}, "name": "symphony", "defaultBranchRef": {"name": "main"}},
+              "labels": {"nodes": [{"name": "Bug"}, {"name": "P1"}]},
+              "trackedIssues": {"nodes": [
+                {"id": "I_b1", "number": 7, "state": "CLOSED", "repository": {"nameWithOwner": "archelab/symphony"}},
+                {"id": "I_b2", "number": 8, "state": "OPEN", "repository": {"nameWithOwner": "archelab/symphony"}}
+              ]}
+            }
+          },
+          {
+            "id": "PVTI_pr_merged",
+            "type": "PULL_REQUEST",
+            "isArchived": false,
+            "fieldValueByName": {"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "In Progress", "optionId": "47fc9ee4"},
+            "content": {
+              "__typename": "PullRequest",
+              "id": "PR_m", "number": 3, "title": "Old PR", "body": "",
+              "url": "https://github.com/archelab/symphony/pull/3",
+              "state": "MERGED", "merged": true, "mergedAt": "2026-04-30T00:00:00Z", "closedAt": "2026-04-30T00:00:00Z",
+              "isDraft": false, "headRefName": "old-branch", "baseRefName": "main",
+              "repository": {"nameWithOwner": "archelab/symphony", "owner": {"login": "archelab"}, "name": "symphony", "defaultBranchRef": {"name": "main"}},
+              "labels": {"nodes": []}
+            }
+          },
+          {
+            "id": "PVTI_archived",
+            "type": "ISSUE",
+            "isArchived": true,
+            "fieldValueByName": {"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "Agent Ready"},
+            "content": {"__typename": "Issue", "id": "I_archived", "number": 100, "title": "Archived", "state": "OPEN",
+                        "repository": {"nameWithOwner": "archelab/symphony", "owner": {"login": "archelab"}, "name": "symphony", "defaultBranchRef": {"name": "main"}},
+                        "labels": {"nodes": []}, "trackedIssues": {"nodes": []}}
+          },
+          {
+            "id": "PVTI_no_status",
+            "type": "ISSUE",
+            "isArchived": false,
+            "fieldValueByName": null,
+            "content": {"__typename": "Issue", "id": "I_ns", "number": 200, "title": "No Status", "state": "OPEN",
+                        "repository": {"nameWithOwner": "archelab/symphony", "owner": {"login": "archelab"}, "name": "symphony", "defaultBranchRef": {"name": "main"}},
+                        "labels": {"nodes": []}, "trackedIssues": {"nodes": []}}
+          },
+          {
+            "id": "PVTI_redacted",
+            "type": "REDACTED",
+            "isArchived": false,
+            "content": null
+          },
+          {
+            "id": "PVTI_draft1",
+            "type": "DRAFT_ISSUE",
+            "isArchived": false,
+            "fieldValueByName": {"__typename": "ProjectV2ItemFieldSingleSelectValue", "name": "Agent Ready"},
+            "content": {"__typename": "DraftIssue", "id": "DI_AF6gQ123abcdef", "title": "Idea", "body": "rough", "createdAt": "2026-05-01T00:00:00Z", "updatedAt": "2026-05-01T00:00:00Z"}
+          }
+        ]
+      }
+    }
+  }
+}

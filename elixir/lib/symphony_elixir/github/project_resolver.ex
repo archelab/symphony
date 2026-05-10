@@ -4,6 +4,16 @@ defmodule SymphonyElixir.Github.ProjectResolver do
   Spec §11.2 / §11.2.4. This module is stateless; callers (e.g., the adapter
   GenServer in Task 5a) are expected to cache resolved IDs + Status options
   for the process lifetime.
+
+  ## Error categorization
+
+  Live GitHub returns HTTP 200 + top-level `errors:[{type: "NOT_FOUND", path: ...}]`
+  for non-existent projects/fields, NOT a null payload. `Github.Client` maps that
+  body to `{:error, {:github_graphql_errors, errors}}` before this module sees it.
+  We re-categorize NOT_FOUND-on-the-relevant-path into the orchestrator-friendly
+  `:tracker_project_not_found` / `:tracker_status_field_missing` atoms so callers
+  have stable error semantics regardless of whether GitHub serves the error via
+  `errors` or via a null payload (the latter still happens for some auth paths).
   """
 
   @resolve_by_id """
@@ -54,6 +64,13 @@ defmodule SymphonyElixir.Github.ProjectResolver do
       {:ok, _} ->
         {:error, {:tracker_project_not_found, %{project_id: id}}}
 
+      {:error, {:github_graphql_errors, errors}} ->
+        if not_found_on_path?(errors, ["node"]) do
+          {:error, {:tracker_project_not_found, %{project_id: id, errors: errors}}}
+        else
+          {:error, {:github_graphql_errors, errors}}
+        end
+
       {:error, _} = err ->
         err
     end
@@ -87,6 +104,13 @@ defmodule SymphonyElixir.Github.ProjectResolver do
       {:ok, _} ->
         {:error, {:tracker_project_not_found, %{owner: owner, owner_type: root}}}
 
+      {:error, {:github_graphql_errors, errors}} ->
+        if not_found_on_path?(errors, [root, "projectV2"]) do
+          {:error, {:tracker_project_not_found, %{owner: owner, owner_type: root, errors: errors}}}
+        else
+          {:error, {:github_graphql_errors, errors}}
+        end
+
       {:error, _} = err ->
         err
     end
@@ -109,6 +133,14 @@ defmodule SymphonyElixir.Github.ProjectResolver do
     {:error, {:github_unknown_payload, "status field probe"}}
   end
 
+  defp interpret_field_response({:error, {:github_graphql_errors, errors}}, project_id, field_name) do
+    if not_found_on_path?(errors, ["node", "field"]) do
+      {:error, {:tracker_status_field_missing, %{field_name: field_name, project_id: project_id, errors: errors}}}
+    else
+      {:error, {:github_graphql_errors, errors}}
+    end
+  end
+
   defp interpret_field_response({:error, _} = err, _project_id, _field_name), do: err
 
   defp classify_field(%{"__typename" => "ProjectV2SingleSelectField"} = f, _project_id, _field_name) do
@@ -127,4 +159,20 @@ defmodule SymphonyElixir.Github.ProjectResolver do
   defp classify_field(%{"__typename" => other}, project_id, field_name) do
     {:error, {:tracker_status_field_missing, %{field_name: field_name, project_id: project_id, type: other}}}
   end
+
+  # GitHub returns errors as `[%{"type" => "NOT_FOUND", "path" => ["node", "field"], ...}]`.
+  # `expected_path` is the prefix of the path we're looking for (e.g.
+  # `["organization", "projectV2"]` for org-by-number resolves). The match is a
+  # prefix-equality check so future GraphQL aliases or sub-fields don't break it.
+  defp not_found_on_path?(errors, expected_path) when is_list(errors) and is_list(expected_path) do
+    Enum.any?(errors, fn
+      %{"type" => "NOT_FOUND", "path" => path} when is_list(path) ->
+        Enum.take(path, length(expected_path)) == expected_path
+
+      _ ->
+        false
+    end)
+  end
+
+  defp not_found_on_path?(_, _), do: false
 end

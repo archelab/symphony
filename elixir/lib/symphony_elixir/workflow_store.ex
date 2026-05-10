@@ -6,6 +6,7 @@ defmodule SymphonyElixir.WorkflowStore do
   use GenServer
   require Logger
 
+  alias SymphonyElixir.Github.Adapter, as: GithubAdapter
   alias SymphonyElixir.Workflow
 
   @poll_interval_ms 1_000
@@ -106,6 +107,7 @@ defmodule SymphonyElixir.WorkflowStore do
   defp reload_path(path, state) do
     case load_state(path) do
       {:ok, new_state} ->
+        after_reload(state, new_state)
         {:ok, new_state}
 
       {:error, reason} ->
@@ -126,6 +128,20 @@ defmodule SymphonyElixir.WorkflowStore do
         log_reload_error(path, reason)
         {:error, reason, state}
     end
+  end
+
+  # Side-effect hook fired after the workflow is reloaded into ETS / state.
+  # Currently used by the GitHub adapter to invalidate its resolved-project
+  # cache so a WORKFLOW.md edit that flips tracker.project_number is observed
+  # on the next tick. Spec §11.2 caches "for the lifetime of the process",
+  # but only while the underlying config is unchanged — this hook enforces
+  # that constraint.
+  defp after_reload(_old, _new) do
+    if Code.ensure_loaded?(GithubAdapter) do
+      GithubAdapter.invalidate_cache()
+    end
+
+    :ok
   end
 
   defp load_state(path) do

@@ -275,6 +275,111 @@ defmodule SymphonyElixir.Github.ProjectResolverTest do
              ProjectResolver.probe_status_field("PVT_x", "Status", fake)
   end
 
+  # ---------------------------------------------------------------------------
+  # GraphQL NOT_FOUND re-categorization (live-GitHub bug from PR1 review).
+  # Real GitHub returns HTTP 200 + top-level errors:[NOT_FOUND] for missing
+  # projects/fields, NOT a null payload. Re-categorize into the same atoms
+  # as the null-payload branches so orchestrator-side handling stays stable.
+  # ---------------------------------------------------------------------------
+
+  test "resolve_by_id re-categorizes NOT_FOUND-on-node into tracker_project_not_found" do
+    fake = fn _q, _v, _o ->
+      {:error, {:github_graphql_errors, [%{"type" => "NOT_FOUND", "path" => ["node"], "message" => "Could not resolve node"}]}}
+    end
+
+    assert {:error, {:tracker_project_not_found, %{project_id: "PVT_x", errors: [_ | _]}}} =
+             ProjectResolver.resolve(
+               %{project_id: "PVT_x", project_number: nil, owner: nil, owner_type: "organization"},
+               fake
+             )
+  end
+
+  test "resolve_by_id passes through unrelated github_graphql_errors" do
+    fake = fn _q, _v, _o ->
+      {:error, {:github_graphql_errors, [%{"type" => "RATE_LIMITED", "path" => ["node"], "message" => "rate"}]}}
+    end
+
+    assert {:error, {:github_graphql_errors, [_ | _]}} =
+             ProjectResolver.resolve(
+               %{project_id: "PVT_x", project_number: nil, owner: nil, owner_type: "organization"},
+               fake
+             )
+  end
+
+  test "resolve_by_query (org) re-categorizes NOT_FOUND-on-organization.projectV2" do
+    fake = fn _q, _v, _o ->
+      {:error,
+       {:github_graphql_errors,
+        [
+          %{
+            "type" => "NOT_FOUND",
+            "path" => ["organization", "projectV2"],
+            "message" => "Could not resolve to a ProjectV2"
+          }
+        ]}}
+    end
+
+    assert {:error, {:tracker_project_not_found, %{owner: "archelab", owner_type: "organization", errors: [_ | _]}}} =
+             ProjectResolver.resolve(
+               %{project_id: nil, project_number: 9_999_999, owner: "archelab", owner_type: "organization"},
+               fake
+             )
+  end
+
+  test "resolve_by_query (org) passes through unrelated github_graphql_errors" do
+    fake = fn _q, _v, _o ->
+      {:error, {:github_graphql_errors, [%{"type" => "FORBIDDEN", "path" => ["organization"], "message" => "no perms"}]}}
+    end
+
+    assert {:error, {:github_graphql_errors, [_ | _]}} =
+             ProjectResolver.resolve(
+               %{project_id: nil, project_number: 1, owner: "archelab", owner_type: "organization"},
+               fake
+             )
+  end
+
+  test "probe_status_field re-categorizes NOT_FOUND-on-node.field into tracker_status_field_missing" do
+    fake = fn _q, _v, _o ->
+      {:error, {:github_graphql_errors, [%{"type" => "NOT_FOUND", "path" => ["node", "field"], "message" => "missing field"}]}}
+    end
+
+    assert {:error, {:tracker_status_field_missing, %{field_name: "Status", project_id: "PVT_x", errors: [_ | _]}}} =
+             ProjectResolver.probe_status_field("PVT_x", "Status", fake)
+  end
+
+  test "probe_status_field passes through unrelated github_graphql_errors" do
+    fake = fn _q, _v, _o ->
+      {:error, {:github_graphql_errors, [%{"type" => "INTERNAL_ERROR", "path" => ["node"], "message" => "boom"}]}}
+    end
+
+    assert {:error, {:github_graphql_errors, [_ | _]}} =
+             ProjectResolver.probe_status_field("PVT_x", "Status", fake)
+  end
+
+  test "not_found_on_path? rejects malformed errors payload" do
+    # Drives the catch-all guard in not_found_on_path?/2 (errors not a list).
+    fake = fn _q, _v, _o -> {:error, {:github_graphql_errors, :not_a_list}} end
+
+    assert {:error, {:github_graphql_errors, :not_a_list}} =
+             ProjectResolver.resolve(
+               %{project_id: "PVT_x", project_number: nil, owner: nil, owner_type: "organization"},
+               fake
+             )
+  end
+
+  test "not_found_on_path? handles error entry without :path" do
+    # NOT_FOUND-typed entry missing "path" → fallback false → passes through.
+    fake = fn _q, _v, _o ->
+      {:error, {:github_graphql_errors, [%{"type" => "NOT_FOUND", "message" => "no path"}]}}
+    end
+
+    assert {:error, {:github_graphql_errors, _}} =
+             ProjectResolver.resolve(
+               %{project_id: "PVT_x", project_number: nil, owner: nil, owner_type: "organization"},
+               fake
+             )
+  end
+
   test "probe_status_field handles option with nil name (lower-cases empty string)" do
     fake =
       FakeClient.respond([

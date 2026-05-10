@@ -91,8 +91,8 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
   end
 
   test "rejects unknown tracker kind with unsupported_tracker_kind" do
-    # PR1 still accepts "linear" as a transition kind (see Schema.@valid_kinds);
-    # use a truly unsupported value here. PR2 (Task 8b) tightens this further.
+    # Schema.@valid_kinds is ~w(github memory) — Linear was dropped in PR1
+    # along with the routing flip in Tracker.adapter/0.
     config = %{
       "tracker" => %{
         "kind" => "jira",

@@ -41,12 +41,12 @@ defmodule SymphonyElixir.Github.Issue do
     ]
 
     @type t :: %__MODULE__{
-            state: String.t(),
+            state: String.t() | nil,
             merged: boolean(),
             merged_at: String.t() | nil,
             closed_at: String.t() | nil,
             is_draft: boolean(),
-            base_ref_name: String.t()
+            base_ref_name: String.t() | nil
           }
   end
 

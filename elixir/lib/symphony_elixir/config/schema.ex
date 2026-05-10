@@ -45,10 +45,10 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
 
     @valid_owner_types ~w(organization user)
-    # PR1 transition window: "linear" is accepted so existing WORKFLOW.md
-    # configs continue to parse while the GitHub adapter lands as dead code.
-    # PR2 commit 11 (Task 8b) tightens this to ~w(github memory).
-    @valid_kinds ~w(github memory linear)
+    # PR1 cuts Linear from the routed kinds. The Linear modules still exist
+    # (slated for deletion in PR2 Task 8b) but `tracker.kind: "linear"` is no
+    # longer accepted — Tracker.adapter/0 only routes to Github + Memory.
+    @valid_kinds ~w(github memory)
     @valid_kinds_for_dispatch ~w(issue pull_request draft_issue)
 
     embedded_schema do
