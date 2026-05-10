@@ -231,6 +231,24 @@ Fields:
     - `closed_at` (timestamp or null)
     - `is_draft` (boolean)
     - `base_ref_name` (string)
+    - `review_decision` (string or null) — `APPROVED`, `CHANGES_REQUESTED`,
+      `REVIEW_REQUIRED`, or `null`. `null` means review requirements do not apply (no branch
+      protection, or the protection rule does not require reviews); it MUST NOT be coerced to
+      `REVIEW_REQUIRED`.
+    - `mergeable` (string or null) — `MERGEABLE`, `CONFLICTING`, `UNKNOWN`.
+    - `merge_state_status` (string or null) — one of `BEHIND`, `BLOCKED`, `CLEAN`, `DIRTY`,
+      `DRAFT`, `HAS_HOOKS`, `UNKNOWN`, `UNSTABLE`. Diagnostic; `BLOCKED` typically indicates
+      failing required checks or missing required reviews.
+    - `check_state` (string or null) — `EXPECTED`, `ERROR`, `FAILURE`, `PENDING`, `SUCCESS`.
+      Derived from the head commit's `statusCheckRollup.state`.
+    - `unresolved_review_threads` (integer) — count of `reviewThreads` with
+      `isResolved == false && isOutdated == false`. Used by workflows that gate on review
+      resolution.
+    - `latest_opinionated_reviews` (list of objects, ordered by `submitted_at` descending) —
+      derived from `latestOpinionatedReviews(first: 50, writersOnly: true)`. Each entry:
+      `state` (`APPROVED` or `CHANGES_REQUESTED`), `author_login`, `submitted_at`.
+    - `requested_reviewers` (list of strings) — `User.login` and `Team.slug` values from
+      `reviewRequests`. `Mannequin` reviewers, when present, contribute the mannequin login.
 - `issue_state` (string or null)
   - For `issue` kind: `OPEN` or `CLOSED`.
   - For `pull_request` kind: same as `pr.state`.
@@ -494,6 +512,25 @@ Fields:
   - Compared the same way as `active_states`.
   - GitHub-specific terminal-OR rule applies — see Section 11.2.1 for the canonical
     statement.
+- `dependency_gating_states` (list of strings, OPTIONAL)
+  - Default: `["Todo"]`.
+  - Items in any state in this list are treated as not-yet-eligible-for-dispatch when they
+    have one or more open `blocked_by` entries. Compared after lowercasing both sides.
+  - Set to `[]` to disable dependency gating entirely.
+  - Set to (for example) `["Todo", "In Progress"]` to also gate items already in progress
+    when sub-issues are open. The orchestrator state machine is unchanged regardless of
+    this setting; gating is purely a candidate-eligibility filter (Section 8.2.1).
+- `gate_running_on_dependencies` (boolean, OPTIONAL)
+  - Default: `false`.
+  - When `true`, an actively running parent issue whose blockers transition from all-closed
+    to any-open during reconciliation (Section 8.5 Part B) has its worker terminated and the
+    issue requeued. When `false` (the default), a running parent finishes its current
+    worker session naturally; the gating filter only applies on the next dispatch attempt.
+- `cross_repo_blockers` (boolean, OPTIONAL)
+  - Default: `true`.
+  - When `false`, blocker entries whose `repository.nameWithOwner` differs from the
+    parent's repository are ignored for gating purposes. Useful for deployments that should
+    only honor in-repo dependencies.
 
 Implementations MUST resolve a unique Project v2 from this configuration before polling. Either
 `project_id` is provided directly, or `project_number` plus `owner` (and `owner_type`) is
@@ -731,6 +768,29 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.include_kinds`: list of strings, default `["issue", "pull_request"]`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Done"]`
+- `tracker.dependency_gating_states`: list of strings, default `["Todo"]`
+- `tracker.gate_running_on_dependencies`: boolean, default `false` (extension)
+- `tracker.cross_repo_blockers`: boolean, default `true` (extension)
+- `tracker.pr_dispatch_signals`: list of strings, default `[]` (extension; see §11.7)
+- `tracker.pr_self_reviewer_logins`: list of strings, default `[]` (extension; see §11.7)
+- `tracker.pr_block_signals`: list of strings, default `[]` (extension; see §11.7)
+
+Extension fields (cheat sheet, see Appendix B / Appendix C for full descriptions):
+
+- `webhook.enabled`: boolean, default `false`
+- `webhook.bind`: string, default `127.0.0.1`
+- `webhook.port`: integer, default `8787`
+- `webhook.path`: string, default `/webhooks/github`
+- `webhook.secret`: string or `$VAR`, REQUIRED when enabled
+- `webhook.events`: list of strings, default per §B.5
+- `webhook.allowlist_cidrs`: list of CIDR strings, default empty
+- `webhook.delivery_dedup_ttl_ms`: integer, default `86400000`
+- `comment_commands.enabled`: boolean, default `false`
+- `comment_commands.bot_login`: string, REQUIRED when enabled
+- `comment_commands.allowed_permissions`: list of strings, default `["ADMIN","MAINTAIN","WRITE"]`
+- `comment_commands.allowed_authors`: list of strings, default empty
+- `comment_commands.commands`: list of strings, default all canonical commands
+- `comment_commands.reaction_acknowledge`: string or null, default null
 - `polling.interval_ms`: integer, default `30000`
 - `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
 - `hooks.after_create`: shell script or null
@@ -879,17 +939,68 @@ An issue is dispatch-eligible only if all are true:
 - It is not already in `claimed`.
 - Global concurrency slots are available.
 - Per-state concurrency slots are available.
-- Blocker rule for `Todo` state passes:
-  - If the issue state is `Todo`, do not dispatch when any blocker is unresolved.
-  - For `tracker.kind == "github"`, a blocker is **resolved** iff its `state == CLOSED`.
-    "Resolved" here is exclusively the GitHub Issue close state; it is independent of the
-    project Status field and of `terminal_states`.
+- Dependency gate passes (Section 8.2.1).
 
 Sorting order (stable intent):
 
 1. `priority` ascending (lower numbers including `0` sort first; `null`/unknown sorts last)
 2. `created_at` oldest first
 3. `identifier` lexicographic tie-breaker
+
+#### 8.2.1 Dependency Gate
+
+The dependency gate is the unified blocker rule. It replaces the original `Todo`-only blocker
+heuristic with a configurable, cross-state filter.
+
+Inputs:
+
+- `issue.state` — the project Status field value.
+- `issue.blocked_by` — list of blocker refs (Section 4.1.1).
+- `tracker.dependency_gating_states` (Section 5.3.1).
+- `tracker.cross_repo_blockers` (Section 5.3.1).
+
+Algorithm:
+
+1. If the lowercased `issue.state` is not in lowercased `tracker.dependency_gating_states`,
+   the gate passes unconditionally.
+2. Otherwise, build the **effective blocker set**: copy of `issue.blocked_by`, filtered to
+   drop entries whose `repository.nameWithOwner` differs from the issue's repository when
+   `tracker.cross_repo_blockers == false`.
+3. A blocker is **resolved** iff its `state == CLOSED`. "Resolved" is exclusively the GitHub
+   Issue close state; it is independent of the project Status field and of
+   `terminal_states`.
+4. The gate passes iff every blocker in the effective set is resolved.
+5. Items that fail the gate are **not** dispatched, **not** retried, and **not** treated as
+   terminal. They appear in the `gated` snapshot bucket (Section 13.7.2) so operators can see
+   why they are sitting still.
+
+Cycle handling:
+
+- If two or more issues form a dependency cycle (A blocks B, B blocks A), every member of the
+  cycle would be permanently gated. Implementations SHOULD detect cycles per tick using a
+  topological sort over the candidate set. When a cycle is detected, every member is treated
+  as having an empty effective blocker set **for that tick only**, dispatch proceeds normally,
+  and the orchestrator emits one operator-visible warning per detected cycle (deduplicated by
+  the sorted member-id tuple) so the cycle is reported but does not freeze the system.
+- Blockers that are **not** in the current candidate set (because they live in a different
+  project, are excluded by `include_kinds`, or were already terminal at fetch time) are
+  evaluated by their `state` field alone: a blocker with `state == CLOSED` resolves the gate
+  for that edge, and any other state keeps it unresolved. Cycles that span into or out of
+  the candidate set therefore cannot deadlock — at least one out-of-set blocker must be
+  CLOSED to break the cycle, and that closure is observable directly from the
+  `Issue.trackedIssues` payload.
+
+Depth handling:
+
+- The gate considers first-level `blocked_by` entries only. Sub-issues' own blockers are
+  evaluated when those sub-issues become candidates themselves.
+
+Decomposition workflow mode:
+
+- This specification does not require a separate "decomposition mode" config. A workflow
+  prompt that instructs the agent to file sub-issues will, on the next tick, find the parent
+  with non-empty `blocked_by` — the parent gates naturally and the new sub-issues become
+  candidates. No special orchestrator support is needed.
 
 ### 8.3 Concurrency Control
 
@@ -954,6 +1065,24 @@ Part B: Tracker state refresh
   - If tracker state is still active: update the in-memory issue snapshot.
   - If tracker state is neither active nor terminal: terminate worker without workspace cleanup.
 - If state refresh fails, keep workers running and try again on the next tick.
+
+Part C: Dependency-gate refresh (OPTIONAL)
+
+- This part runs only when `tracker.gate_running_on_dependencies == true`.
+- For each running issue whose `state` is in `tracker.dependency_gating_states`:
+  - Re-evaluate the dependency gate (Section 8.2.1) using the freshly refreshed
+    `blocked_by` list.
+  - If the gate now fails (a previously-resolved blocker reopened, or a new blocker was
+    added), terminate the worker without workspace cleanup, release the claim, and emit a
+    log entry with reason `dependencies_reopened`.
+- This part runs after Part B so it operates on already-refreshed `blocked_by` data.
+- Termination via this path does **not** schedule a retry (Section 16.6); the issue
+  returns to `Unclaimed` and is re-evaluated by the next poll tick or webhook trigger.
+  Scheduling a retry would be self-defeating: the very next dispatch attempt would fail
+  the dependency gate and release the claim again.
+- When `gate_running_on_dependencies == false` (the default), running workers are not
+  interrupted by blocker changes; the gate only re-applies on the next dispatch attempt
+  after the worker exits naturally.
 
 ### 8.6 Startup Terminal Workspace Cleanup
 
@@ -1477,8 +1606,35 @@ query SymphonyProjectItems($projectId: ID!, $first: Int!, $after: String) {
             ... on PullRequest {
               id number title body url state createdAt updatedAt
               isDraft merged mergedAt closedAt headRefName baseRefName
+              reviewDecision
+              mergeable
+              mergeStateStatus
               repository { nameWithOwner owner { login } name }
               labels(first: 50) { nodes { name } }
+              latestOpinionatedReviews(first: 50, writersOnly: true) {
+                nodes { state author { login } submittedAt }
+              }
+              reviewThreads(first: 50) {
+                nodes { id isResolved isOutdated }
+              }
+              reviewRequests(first: 20) {
+                nodes {
+                  requestedReviewer {
+                    __typename
+                    ... on User { login }
+                    ... on Team { slug }
+                    ... on Mannequin { login }
+                  }
+                }
+              }
+              commits(last: 1) {
+                nodes {
+                  commit {
+                    oid
+                    statusCheckRollup { state }
+                  }
+                }
+              }
             }
             ... on DraftIssue {
               id title body createdAt updatedAt
@@ -1601,6 +1757,20 @@ Additional normalization details:
 - `pr.state`: GitHub `PullRequest.state` (`OPEN`, `CLOSED`, or `MERGED`).
 - `pr.merged`, `pr.merged_at`, `pr.closed_at`, `pr.is_draft`, `pr.base_ref_name`: copied
   through.
+- `pr.review_decision`: `PullRequest.reviewDecision`. Preserve `null` distinctly from
+  `REVIEW_REQUIRED` (Section 4.1.1).
+- `pr.mergeable`, `pr.merge_state_status`: copied through. `mergeStateStatus == DRAFT` is
+  derived from `isDraft`; the implementation MAY drop `DRAFT` from `merge_state_status`
+  reporting since `pr.is_draft` already carries the same signal.
+- `pr.check_state`: `commits.last.commit.statusCheckRollup.state`. When the PR has no
+  `statusCheckRollup` (no checks configured), set to `null` rather than fabricating a value.
+- `pr.unresolved_review_threads`: count `reviewThreads.nodes` where
+  `isResolved == false && isOutdated == false`.
+- `pr.latest_opinionated_reviews`: list each
+  `latestOpinionatedReviews.nodes` entry as `{state, author_login, submitted_at}`. Sort by
+  `submitted_at` descending so callers can take `[0]` as the most recent opinion.
+- `pr.requested_reviewers`: flatten `reviewRequests.nodes[].requestedReviewer` into a list of
+  strings — `User.login`, `Team.slug`, or `Mannequin.login`. Deduplicate.
 - `branch_name`: `PullRequest.headRefName` for `pull_request` kind; null otherwise.
 - `issue_state`: `Issue.state` for `issue`; `pr.state` for `pull_request`; null for
   `draft_issue`.
@@ -1631,6 +1801,13 @@ RECOMMENDED error categories:
 - `github_graphql_errors` (top-level GraphQL `errors`)
 - `github_unknown_payload` (response shape did not match expectations)
 - `github_missing_end_cursor` (pagination integrity error)
+- `unsupported_pr_signal` (unknown entry in `tracker.pr_dispatch_signals` or
+  `tracker.pr_block_signals`; payload includes the rejected signal name)
+
+Extensions defined in Appendices B and C add their own error categories scoped to those
+extensions. See §B.7 (webhook listener) and §C.6 (comment control plane). Those categories
+are deliberately not duplicated in §11.4 because they are not produced by the tracker
+adapter itself.
 
 Orchestrator behavior on tracker errors:
 
@@ -1669,6 +1846,19 @@ Project v2 and the underlying Issues and Pull Requests. RECOMMENDED minimum scop
     expected).
 - GitHub App: equivalent permissions, scoped to the installation that owns the project.
 
+When the Comment Control Plane extension (Appendix C) is enabled, the configured token
+additionally requires permission to read repository collaborator metadata, because §C.4
+resolves comment-author permission via
+`GET /repos/{owner}/{repo}/collaborators/{login}/permission`:
+
+- Classic PAT: `repo` already covers this.
+- Fine-grained PAT: `Members: Read` at the **organization** level (NOT repository
+  scope). A token scoped only to one repository will receive HTTP 403 from this endpoint
+  and the comment control plane will silently reject every command.
+- GitHub App: `members: read` (organization permission).
+
+When the Comment Control Plane extension is disabled, this scope is not required.
+
 Implementations SHOULD document the permission model they require and MUST detect
 permission-denied responses at startup validation. Permission-denied surfaces in two shapes:
 
@@ -1678,6 +1868,115 @@ permission-denied responses at startup validation. Permission-denied surfaces in
   `tracker_permission_denied`, NOT to the generic `github_graphql_errors` bucket. The
   generic bucket would otherwise loop forever in skip-this-tick mode with no operator
   signal.
+
+### 11.7 PR Review and CI Awareness Extension (OPTIONAL)
+
+Symphony's core dispatch loop only consults project Status and the terminal-OR rule
+(Section 11.2.1). Pull Request items expose richer signals — review decisions, unresolved
+review threads, and CI rollup state — that workflows often want to react to. This section
+defines an OPTIONAL extension that adds two PR-specific dispatch predicates.
+
+The extension is purely additive: when not configured, behavior matches Section 11.2.1
+exactly. When configured, the predicates apply only to items whose `kind == "pull_request"`.
+
+#### 11.7.1 Configuration
+
+Under `tracker`:
+
+- `tracker.pr_dispatch_signals` (list of strings, OPTIONAL)
+  - Each entry names a PR signal that, when present, makes a PR dispatch-eligible **even if
+    its project Status is not in `active_states`**. Supported entries:
+    - `changes_requested` — at least one entry in `pr.latest_opinionated_reviews` has
+      `state == CHANGES_REQUESTED`, **and** `pr.unresolved_review_threads > 0`. The
+      `unresolved_review_threads` clause is a "still actionable" proxy: if all threads have
+      been resolved (typically because the agent or a maintainer marked them so), there is
+      nothing for a re-dispatch to address.
+    - `ci_failure` — `pr.check_state ∈ {ERROR, FAILURE}`.
+    - `review_requested` — at least one login in `tracker.pr_self_reviewer_logins` appears
+      in `pr.requested_reviewers`.
+  - Default: empty list (extension disabled).
+  - Items dispatched solely because of a PR signal are subject to all other eligibility
+    rules (concurrency, claims, blockers).
+  - Per-author review collapsing: GitHub's `latestOpinionatedReviews(writersOnly: true)`
+    already returns the most recent opinionated review per author (states `APPROVED` and
+    `CHANGES_REQUESTED`; non-opinionated states `COMMENTED`/`DISMISSED`/`PENDING` are
+    excluded). The implementation iterates the list directly without de-duplicating.
+    Worked example for reviewer Alice:
+    - Alice posts `CHANGES_REQUESTED`, then `COMMENTED`, then `APPROVED` —
+      `latestOpinionatedReviews` returns Alice's `APPROVED` (the `COMMENTED` is filtered
+      out, the `APPROVED` supersedes the earlier `CHANGES_REQUESTED`). The
+      `changes_requested` predicate does not match for Alice.
+    - Alice posts `CHANGES_REQUESTED`, then `COMMENTED` — `latestOpinionatedReviews`
+      returns Alice's `CHANGES_REQUESTED`. The predicate matches (subject to the
+      `unresolved_review_threads > 0` clause).
+
+- `tracker.pr_self_reviewer_logins` (list of strings, OPTIONAL)
+  - Logins that identify the Symphony deployment to itself (typically the GitHub App or
+    bot user that owns `tracker.api_token`). Used by the `review_requested` signal and by
+    any workflow that needs to distinguish "human asked us to review" from "human asked
+    another reviewer."
+
+- `tracker.pr_block_signals` (list of strings, OPTIONAL)
+  - Each entry names a PR signal that, when present, **disqualifies** a PR from dispatch
+    even if its project Status is in `active_states`. Supported entries:
+    - `awaiting_human_review` — `pr.review_decision == REVIEW_REQUIRED` AND no entry in
+      `tracker.pr_self_reviewer_logins` is among `pr.requested_reviewers`.
+    - `mergeable_unknown` — `pr.mergeable == UNKNOWN`. Useful as a brief soft-pause to
+      let GitHub finish computing mergeability after a `synchronize` event.
+    - `merge_state_blocked` — `pr.merge_state_status == BLOCKED` **and**
+      `pr.review_decision == REVIEW_REQUIRED`. The `REVIEW_REQUIRED` clause is critical:
+      `mergeStateStatus == BLOCKED` also fires when CI is failing on a required check, but
+      that is exactly the situation `pr_dispatch_signals.ci_failure` is designed to act on.
+      Without the `REVIEW_REQUIRED` clause, configuring `ci_failure` and
+      `merge_state_blocked` together would silently no-op every CI failure.
+  - Default: empty list (extension disabled).
+
+`pr_dispatch_signals` is evaluated **before** `pr_block_signals`; if a PR matches both, the
+block wins. This makes block signals a hard veto.
+
+#### 11.7.2 Effective State for PRs Under the Extension
+
+When the extension is configured, a PR's effective dispatch eligibility is:
+
+```
+eligible_pr =
+    (status in active_states OR any signal in pr_dispatch_signals matches)
+  AND NOT (any signal in pr_block_signals matches)
+  AND NOT terminal-OR rule (Section 11.2.1)
+  AND blocker rule passes
+```
+
+The terminal-OR rule still wins: a closed or merged PR is terminal regardless of any
+configured signal.
+
+PR items MUST also pass the dependency gate (Section 8.2.1). The PR-specific dispatch
+predicates do not bypass blocker enforcement: a PR with `CHANGES_REQUESTED` and an open
+sub-issue dependency is gated, not dispatched. The block-vs-dispatch evaluation order
+inside Section 11.7 (block wins) is independent of this — the dependency gate is an
+outer eligibility check applied to all kinds, and a PR that fails the dependency gate
+never reaches the §11.7 predicates.
+
+#### 11.7.3 Continuation-Run Semantics
+
+When a PR is dispatched because of `changes_requested` or `ci_failure`, the prompt template
+SHOULD render with `attempt` non-null and SHOULD have access to the relevant signal so the
+agent's prompt can address the right thing. The standard template variables already expose
+`issue.pr.review_decision`, `issue.pr.check_state`, and
+`issue.pr.latest_opinionated_reviews`; workflows are expected to branch on these values
+inside their Markdown body.
+
+The orchestrator does not auto-resolve review threads, dismiss reviews, or push commits.
+Those mutations remain the agent's job (typically via `github_graphql` or `gh` CLI inside
+the workspace). A successful agent run that pushes new commits will trigger the same
+dispatch predicates on the next tick — ensure workflow prompts terminate the loop with a
+clear handoff state, rather than letting the agent perpetually re-respond to its own CI
+failures.
+
+#### 11.7.4 Validation
+
+Dispatch preflight (Section 6.3) MUST reject `tracker.pr_dispatch_signals` and
+`tracker.pr_block_signals` containing values not listed above; raise
+`unsupported_pr_signal` with the offending signal name in the payload.
 
 ## 12. Prompt Construction and Context Assembly
 
@@ -1751,6 +2050,27 @@ SHOULD return:
 - `running` (list of running session rows)
 - each running row SHOULD include `turn_count`
 - `retrying` (list of retry queue rows)
+- `webhook` (object, OPTIONAL — included when the webhook listener extension is
+  enabled). Suggested fields:
+  - `enabled` (boolean) — current effective `webhook.enabled` value.
+  - `deliveries_received` (integer) — total deliveries that passed signature verification
+    in the current process lifetime.
+  - `deliveries_dropped` (integer) — count of deliveries that hit the async-queue overflow
+    path in §B.3 step 6 (logged as `webhook_queue_full`).
+  - `last_event_at` (timestamp or null) — most recent successfully-queued delivery.
+  - Implementations MAY expose rolling-window variants (e.g. last hour) instead of
+    process-lifetime totals. Drop counts are critical for operators to detect whether the
+    polling-loop fallback is silently carrying load that webhooks were supposed to handle.
+- `gated` (list of items currently held by the dependency gate, when the
+  `dependency_gating_states` config is non-empty; OPTIONAL but RECOMMENDED). Each row carries
+  `issue_id`, `issue_identifier`, `kind`, `state`, `reason`, and (for
+  `blocked_on_dependencies`) a `blockers` list.
+  - The only `reason` defined by Core Conformance is `blocked_on_dependencies`.
+  - PR items vetoed by `tracker.pr_block_signals` (Section 11.7) are NOT included in this
+    bucket in the Core specification; if an implementation chooses to expose them, it
+    SHOULD use a distinct `reason` discriminator (for example `pr_block_signal:
+    awaiting_human_review`) and document that as an extension. Otherwise the snapshot
+    would conflate two different concepts.
 - `codex_totals`
   - `input_tokens`
   - `output_tokens`
@@ -1864,7 +2184,8 @@ Minimum endpoints:
       "generated_at": "2026-02-24T20:15:30Z",
       "counts": {
         "running": 2,
-        "retrying": 1
+        "retrying": 1,
+        "gated": 1
       },
       "running": [
         {
@@ -1894,6 +2215,19 @@ Minimum endpoints:
           "attempt": 3,
           "due_at": "2026-02-24T20:16:00Z",
           "error": "no available orchestrator slots"
+        }
+      ],
+      "gated": [
+        {
+          "issue_id": "PVTI_lADOBcd_eM4AF6gQzgKZ1cy",
+          "issue_identifier": "openai/symphony#100",
+          "kind": "issue",
+          "state": "Todo",
+          "reason": "blocked_on_dependencies",
+          "blockers": [
+            {"identifier": "openai/symphony#101", "state": "OPEN"},
+            {"identifier": "openai/symphony#102", "state": "OPEN"}
+          ]
         }
       ],
       "codex_totals": {
@@ -2475,6 +2809,63 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   updates the token
 - Primary rate-limit signal (HTTP 200 with `rateLimit.remaining == 0`) defers the next
   tracker call until `rateLimit.resetAt` rather than retrying immediately
+- Dependency gate (Section 8.2.1) holds items in `dependency_gating_states` whose
+  `blocked_by` includes any non-CLOSED entries; gated items appear in the snapshot `gated`
+  bucket; cycle members are dispatched with a one-shot warning rather than frozen
+- When `gate_running_on_dependencies` is enabled, a previously-resolved blocker reopening
+  during reconciliation Part C terminates the running parent worker with reason
+  `dependencies_reopened`
+- When `cross_repo_blockers` is `false`, blockers in other repositories are ignored by the
+  dependency gate
+- If the PR Review and CI Awareness extension (Section 11.7) is implemented:
+  - normalized Issues for `kind == "pull_request"` populate `pr.review_decision`,
+    `pr.mergeable`, `pr.merge_state_status`, `pr.check_state`,
+    `pr.unresolved_review_threads`, `pr.latest_opinionated_reviews`, and
+    `pr.requested_reviewers`
+  - `null` `reviewDecision` is preserved and not coerced to `REVIEW_REQUIRED`
+  - `tracker.pr_dispatch_signals` allows dispatch outside `active_states` per Section 11.7.1
+  - `tracker.pr_block_signals` vetoes dispatch even inside `active_states`
+  - a PR matching both a dispatch signal and a block signal is treated as blocked
+    (block-wins evaluation order from Section 11.7.1)
+  - a PR that fails the dependency gate (Section 8.2.1) is not dispatched even when a PR
+    dispatch signal would otherwise apply
+  - `merge_state_blocked` does NOT veto dispatch when the underlying cause is failing CI
+    (`mergeStateStatus == BLOCKED` with `review_decision != REVIEW_REQUIRED`)
+  - unknown signal entries raise `unsupported_pr_signal` at preflight
+- If the Webhook-Driven Dispatch extension (Appendix B) is implemented:
+  - HMAC-SHA256 verification rejects requests with a missing or mismatched
+    `X-Hub-Signature-256` header (HTTP 401), without falling back to SHA-1
+  - duplicate `X-GitHub-Delivery` UUIDs within the dedup window return HTTP 200 with no
+    side effect
+  - events outside `webhook.events` return HTTP 200 and are not processed (rather than 4xx,
+    which would mark the delivery as failed)
+  - the receiver returns within 10 seconds even when downstream tracker calls are slow
+  - `ping` deliveries return HTTP 200
+  - IP allowlisting (when configured) rejects requests from outside the configured CIDRs
+  - when the async event queue is full, the receiver still returns HTTP 200 and logs
+    `webhook_queue_full` rather than 5xx-ing the delivery
+- If the Comment Control Plane extension (Appendix C) is implemented:
+  - comments authored by `comment_commands.bot_login` are silently ignored
+  - `comment_commands.allowed_authors` bypasses the repository-permission check
+  - authors below `comment_commands.allowed_permissions` are rejected and logged
+  - `author_association` is NOT used as a permission proxy; the implementation resolves
+    effective permission via the REST endpoint
+    `GET /repos/{owner}/{repo}/collaborators/{login}/permission` per command (the GraphQL
+    `repository.collaborators` connection is NOT used because it omits team-only members)
+  - edited comments whose canonical command line is unchanged are no-ops
+  - enabling the extension while `webhook.enabled == false` raises
+    `comment_commands_requires_webhook` at preflight
+  - commands inside Markdown blockquote lines (`> @bot retry`) and inside fenced or
+    indented code blocks are not honored
+  - `bot_login` configured without the `[bot]` suffix correctly suppresses self-loops for
+    PAT-based deployments but emits an operator-visible warning for App-based deployments
+    where the actual login carries `[bot]` (or, equivalently, the implementation requires
+    the suffix and rejects mismatched configurations at preflight)
+  - a `retry` command issued against an issue currently held by the dependency gate
+    releases the claim and logs `comment_command_skipped` with the gate reason
+  - a token that lacks org-level `Members: Read` raises
+    `comment_commands_token_insufficient` at the startup probe (§C.6), and subsequent
+    commands are rejected with an operator-visible warning until the token is corrected
 - Pagination preserves order across multiple pages within one fetch
 - Blockers are normalized from `Issue.trackedIssues.nodes`; the optional label-based
   fallback is exercised only when explicitly enabled
@@ -2627,6 +3018,19 @@ Use the same validation profiles as Section 17:
   exposes the baseline endpoints/error semantics in Section 13.7 if shipped.
 - `github_graphql` client-side tool extension exposes raw GitHub GraphQL access through the
   app-server session using the configured Symphony tracker auth.
+- PR Review and CI Awareness extension (Section 11.7): exposes
+  `pr.review_decision`/`pr.check_state`/`pr.unresolved_review_threads`/etc. on the
+  normalized Issue and adds `tracker.pr_dispatch_signals`/`tracker.pr_block_signals` to the
+  candidate-eligibility predicates.
+- Webhook-Driven Dispatch extension (Appendix B): HTTP listener with HMAC-SHA256 signature
+  verification, `X-GitHub-Delivery` deduplication, IP allowlisting, and immediate
+  refresh-tick triggers. Polling remains the safety net.
+- Comment Control Plane extension (Appendix C): `@<bot_login> retry|pause|resume|stop|status`
+  commands gated by repository permission. Depends on the webhook listener.
+- Sub-issue dependency gating is part of Core Conformance (Section 18.1) when shipped via
+  the `tracker.dependency_gating_states` config (default `["Todo"]` matches the original
+  Section 8.2 behavior); the extended config knobs (`gate_running_on_dependencies`,
+  `cross_repo_blockers`) are RECOMMENDED extensions.
 - TODO: Persist retry queue and session metadata across process restarts.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.
@@ -2702,3 +3106,444 @@ Extension config:
 - Cleanup and observability:
   - Operators need to know which host owns a run, where its workspace lives, and whether cleanup
     happened on the right machine.
+
+## Appendix B. Webhook-Driven Dispatch Extension (OPTIONAL)
+
+This appendix describes an OPTIONAL extension that supplements the polling loop (Section 8.1)
+with a webhook listener. When configured, GitHub events are translated into immediate dispatch
+or reconciliation ticks, reducing dispatch latency from `polling.interval_ms` to milliseconds
+and reducing GraphQL spend.
+
+The polling loop is **not** removed by this extension — it remains the safety net for missed
+events, processing failures, and out-of-order delivery. Webhooks are additive.
+
+### B.1 Configuration
+
+Top-level workflow front-matter key `webhook` (object):
+
+- `webhook.enabled` (boolean)
+  - Default: `false`.
+- `webhook.bind` (string, OPTIONAL)
+  - Listen address. Default: `127.0.0.1`. Bind to `0.0.0.0` only when fronted by a reverse
+    proxy or running inside an isolation boundary that allows public ingress.
+  - **TLS**: Symphony does not implement TLS itself. When exposing the receiver to the
+    public Internet, operators MUST terminate TLS at the reverse proxy or load balancer.
+    The webhook secret protects the **integrity** of the payload (HMAC), but not its
+    **confidentiality**; payload contents (project state changes, comment bodies, PR
+    titles) travel in cleartext to a non-TLS receiver and should be considered exposed.
+- `webhook.port` (integer, OPTIONAL)
+  - TCP port. Default: `8787`. May be the same process listener as the OPTIONAL HTTP server
+    extension (Section 13.7); when both are configured to the same port, the webhook
+    receiver MUST be mounted at a distinct path (default `/webhooks/github`) and routed
+    explicitly.
+- `webhook.path` (string, OPTIONAL)
+  - HTTP path receiving webhook deliveries. Default: `/webhooks/github`.
+- `webhook.secret` (string)
+  - REQUIRED when `webhook.enabled == true`. MAY be a literal value or `$VAR_NAME`. The
+    same secret MUST be configured on the GitHub-side webhook. If `$VAR_NAME` resolves to
+    an empty string, dispatch preflight (Section 6.3) fails with `webhook_secret_missing`.
+- `webhook.events` (list of strings, OPTIONAL)
+  - Whitelist of GitHub event names the receiver acts on. Defaults are listed in Section
+    B.5. Events received but not in this list are signature-verified and 200-OK'd (so the
+    GitHub-side delivery is recorded as success), then discarded.
+- `webhook.allowlist_cidrs` (list of strings, OPTIONAL)
+  - When non-empty, requests whose source IP does not fall within any listed CIDR are
+    rejected with HTTP 403. Implementations SHOULD populate this from the `hooks` array
+    returned by `GET https://api.github.com/meta` and SHOULD periodically refresh it.
+- `webhook.delivery_dedup_ttl_ms` (integer, OPTIONAL)
+  - Default: `86400000` (24 hours). Cache window for `X-GitHub-Delivery` IDs (Section B.3).
+
+Cheat-sheet entries (Section 6.4):
+
+- `webhook.enabled`: boolean, default `false`
+- `webhook.bind`: string, default `127.0.0.1`
+- `webhook.port`: integer, default `8787`
+- `webhook.path`: string, default `/webhooks/github`
+- `webhook.secret`: string or `$VAR`, REQUIRED when enabled
+- `webhook.events`: list of strings, default per Section B.5
+- `webhook.allowlist_cidrs`: list of CIDR strings, default empty
+- `webhook.delivery_dedup_ttl_ms`: integer, default `86400000`
+
+### B.2 Provisioning
+
+This specification does NOT require Symphony to create the GitHub-side webhook automatically.
+Operators provision the webhook in one of three ways:
+
+- **Org webhook** (RECOMMENDED for `projects_v2_item` coverage):
+  `POST /orgs/{org}/hooks` with body:
+
+  ```json
+  {
+    "name": "web",
+    "active": true,
+    "events": ["projects_v2_item", "issues", "pull_request",
+               "pull_request_review", "pull_request_review_thread",
+               "pull_request_review_comment", "issue_comment",
+               "check_suite", "check_run"],
+    "config": {
+      "url": "https://symphony.example.com/webhooks/github",
+      "content_type": "json",
+      "secret": "<value matching webhook.secret>",
+      "insecure_ssl": "0"
+    }
+  }
+  ```
+
+  Required token scope: `admin:org_hook`.
+
+- **Repo webhook**: `POST /repos/{owner}/{repo}/hooks` with the same body. Required token
+  scope: `admin:repo_hook`. NOTE: `projects_v2_item` is **not** delivered at the repo level;
+  this option is sufficient for Issue/PR-only deployments but cannot fully replace the
+  polling loop for project-Status changes.
+
+- **GitHub App**: register a single webhook URL in the App's settings; the App receives
+  events from every installation it is installed on. RECOMMENDED for multi-org deployments.
+
+### B.3 Receiver Contract
+
+For every incoming HTTP request on `webhook.path`, the receiver MUST:
+
+1. **IP allowlist check** (when configured): reject with HTTP 403 if the source IP is not in
+   `webhook.allowlist_cidrs`.
+
+2. **Read the raw body** as bytes. Signature verification is over the raw body, not a
+   re-serialized JSON form.
+
+3. **Signature verification**:
+   - Header: `X-Hub-Signature-256`, value format `sha256=<hex>`.
+   - Compute HMAC-SHA256 over the raw body using `webhook.secret` (UTF-8 encoded).
+   - Compare hex-encoded digests using a constant-time comparator (e.g. `hmac.compare_digest`,
+     `crypto.timingSafeEqual`, `Plug.Crypto.secure_compare`). Reject mismatches with HTTP 401.
+   - If `X-Hub-Signature-256` is missing entirely, reject with HTTP 401.
+   - The legacy `X-Hub-Signature` (HMAC-SHA1) header MUST be ignored. Implementations MUST
+     NOT fall back to SHA-1 verification.
+
+4. **Delivery deduplication**:
+   - Read `X-GitHub-Delivery` (UUID, unique per delivery attempt).
+   - If this UUID has been observed within `webhook.delivery_dedup_ttl_ms`, return HTTP 200
+     with an empty body and stop processing.
+   - Otherwise, record the UUID with the current timestamp, then continue.
+   - GitHub does **not** auto-retry failed deliveries (Section B.6), so duplicate deliveries
+     occur only when an operator manually redelivers via the GitHub UI or the deliveries API.
+     Reprocessing such a redelivery is acceptable; suppressing it via the dedup window
+     prevents accidental double-application within a few seconds.
+
+5. **Event routing**:
+   - Read `X-GitHub-Event` (the canonical event name).
+   - If the event name is not in `webhook.events`, return HTTP 200 with an empty body and
+     stop processing. Do NOT 4xx; that would mark the delivery as failed in GitHub's UI.
+   - Otherwise, parse the JSON body and dispatch per Section B.5.
+
+6. **Respond within 10 seconds**. GitHub treats deliveries that exceed this timeout as
+   failures. The receiver MUST NOT block on tracker GraphQL calls or worker dispatch; it
+   MUST queue the work asynchronously and return HTTP 200 immediately (a 2xx within 10s,
+   typically <100 ms). Long-running orchestration happens on the next tick triggered by
+   the webhook.
+   - **Queue overflow**: when the receiver's internal in-memory event queue is bounded and
+     full, the receiver MUST still respond HTTP 200 (a 5xx response would mark the
+     delivery as failed in GitHub's UI without prompting auto-retry — a worse outcome than
+     dropping the event). The receiver SHOULD log `webhook_queue_full` with the dropped
+     `X-GitHub-Delivery` UUID. The polling loop (Section 8.1) is the recovery path; the
+     next tick will reconcile any state changes the dropped event would have surfaced.
+
+7. **Ping handling**: when `X-GitHub-Event == "ping"`, return HTTP 200 with body
+   `{"pong": true}`. Implementations MAY log the ping payload's `zen` field for diagnostic
+   value.
+
+### B.4 Bridge to the Orchestrator
+
+A successful, deduplicated, in-allowlist event triggers an **immediate tick**:
+
+- The receiver enqueues a request equivalent to `POST /api/v1/refresh` (Section 13.7.2)
+  carrying optional hints about which issue IDs were touched.
+- The orchestrator's tick loop coalesces multiple webhook-triggered refreshes within a short
+  window (RECOMMENDED: 1 second) to avoid storms during bulk project edits.
+- Hinted IDs are passed to `fetch_issue_states_by_ids` so reconciliation does not need to
+  enumerate the entire project to reflect a single-item change.
+
+For events that carry `changes.field_value.from`/`to` (specifically `projects_v2_item.edited`
+on a single-select field — the canonical "Status changed" signal), implementations MAY skip
+the GraphQL refresh entirely and apply the new state in-memory. This is an OPTIONAL
+optimization; the conservative path is to always re-fetch.
+
+### B.5 Default Event Whitelist and Dispatch Effect
+
+| Event | Action(s) | Effect |
+|---|---|---|
+| `projects_v2_item` | `created`, `edited`, `archived`, `restored`, `deleted`, `reordered`, `converted` | Refresh the affected item (or full candidate sweep on `archived`/`deleted`). **Org-level webhooks only**; not delivered to repo-level webhooks (see §B.2). |
+| `issues` | `opened`, `closed`, `reopened`, `labeled`, `unlabeled`, `edited`, `transferred` | Refresh the project items that wrap this issue, if any. |
+| `pull_request` | `opened`, `closed`, `reopened`, `synchronize`, `ready_for_review`, `converted_to_draft`, `edited`, `labeled`, `unlabeled`, `review_requested`, `review_request_removed` | Refresh the project items that wrap this PR. `synchronize` indicates new commits and SHOULD trigger a CI/check-state re-evaluation per Section 11.7. |
+| `pull_request_review` | `submitted`, `edited`, `dismissed` | Refresh the wrapping project item; if `pr_dispatch_signals` includes `changes_requested` and the new review is `CHANGES_REQUESTED`, the next tick may dispatch immediately. |
+| `pull_request_review_thread` | `resolved`, `unresolved` | Refresh `pr.unresolved_review_threads` for the wrapping item. Requires GitHub.com or GitHub Enterprise Server 3.10+; older GHES versions silently do not deliver these and `pr.unresolved_review_threads` updates only on the next poll. |
+| `pull_request_review_comment` | `created`, `edited`, `deleted` | Inline diff comment events. Used by the comment control plane (Appendix C) when configured. |
+| `issue_comment` | `created`, `edited`, `deleted` | PR-conversation and issue comment events. Note: PR-level conversation comments arrive as `issue_comment`, NOT `pull_request_review_comment`. The comment control plane subscribes to both. |
+| `check_suite` | `completed` | Refresh PR `check_state`. |
+| `check_run` | `completed`, `rerequested` | Refresh PR `check_state`. |
+
+Other events SHOULD be ignored even if delivered; implementations MAY add events to
+`webhook.events` for workflow-specific extensions but MUST treat unknown payload shapes as
+non-fatal (parse, fail, 200-OK, log).
+
+### B.6 Out-of-Order Delivery and Reliability
+
+- GitHub does NOT guarantee event ordering. Two near-simultaneous edits MAY arrive out of
+  order. Reconciliation handles this naturally because each event triggers a fresh
+  `fetch_issue_states_by_ids` (or a full sweep) — the latest state always wins.
+- GitHub does NOT auto-retry failed deliveries. The polling loop (Section 8.1) is the
+  authoritative recovery path. Operators MAY redeliver failed events from the GitHub UI or
+  via `POST /orgs/{org}/hooks/{hook_id}/deliveries/{delivery_id}/attempts`; implementations
+  SHOULD treat redelivered events identically to first-time deliveries (the dedup window
+  in Section B.3 prevents tight-loop double-processing).
+- The maximum payload size is approximately 25 MB (per GitHub documentation, mid-2026).
+  Implementations SHOULD reject larger requests with HTTP 413 before parsing.
+
+### B.7 Validation and Errors
+
+Dispatch preflight additions (Section 6.3) when `webhook.enabled == true`:
+
+- `webhook_secret_missing`: `webhook.secret` is unset or resolves to empty.
+- `webhook_port_in_use`: bind to `webhook.bind:webhook.port` failed.
+
+Receiver-side error categories (logged per request; not orchestrator state):
+
+- `webhook_signature_invalid`
+- `webhook_signature_missing`
+- `webhook_ip_disallowed`
+- `webhook_payload_too_large`
+- `webhook_payload_unparseable`
+- `webhook_event_ignored` (DEBUG-level; expected when an event arrives outside `webhook.events`)
+- `webhook_queue_full` (the receiver's async queue could not accept the event; the delivery
+  is acknowledged with HTTP 200 and the polling loop is relied on for recovery)
+
+### B.8 Conformance Notes
+
+This appendix is `Extension Conformance` (Section 17). Implementations that do not ship the
+webhook listener MUST still validate that `webhook.enabled` defaults to `false`, and MUST
+ignore any webhook-related front-matter keys when the listener is absent. Implementations that
+do ship it MUST cover the receiver contract (Section B.3) in tests, including signature
+mismatch, missing signature, IP rejection, dedup, ping handling, and the 10-second response
+budget.
+
+## Appendix C. Comment Control Plane Extension (OPTIONAL)
+
+This appendix describes an OPTIONAL extension that lets repository contributors control a
+running Symphony deployment by leaving slash-command comments on Issues and Pull Requests.
+The extension depends on the webhook listener (Appendix B); polling-only deployments cannot
+implement low-latency comment commands.
+
+### C.1 Configuration
+
+Top-level workflow front-matter key `comment_commands` (object):
+
+- `comment_commands.enabled` (boolean)
+  - Default: `false`.
+- `comment_commands.bot_login` (string)
+  - REQUIRED when enabled. The GitHub login that owns `tracker.api_token` (e.g. the App's
+    bot user or the PAT owner). Used for two reasons:
+    1. Symphony's own comments are detected and ignored, preventing self-trigger loops.
+    2. The mention prefix `@<bot_login>` is the canonical command marker (e.g. `@symphony`).
+  - For GitHub Apps, the login appearing in `comment.user.login` includes the literal
+    `[bot]` suffix (for example `symphony[bot]`). The configured `bot_login` MUST match
+    that exact form including the suffix; configuring just `symphony` would break
+    self-loop suppression because the strings would not be equal. The mention prefix
+    `@<bot_login>` is matched the same way: GitHub renders mentions of App bots as
+    `@symphony[bot]`, and the spec parses the prefix as configured. Implementations MAY
+    additionally accept the bare login (without `[bot]`) as a convenience alias for the
+    mention prefix when this is documented in the deployment runbook.
+- `comment_commands.allowed_permissions` (list of strings)
+  - Default: `["ADMIN", "MAINTAIN", "WRITE"]`. Subset of GitHub's repository permission
+    levels: `READ`, `TRIAGE`, `WRITE`, `MAINTAIN`, `ADMIN`. A command is honored only if its
+    author's effective repository permission is one of the listed values.
+  - The implementation MUST resolve the author's permission via the REST
+    `GET /repos/{owner}/{repo}/collaborators/{login}/permission` endpoint at command time
+    (see §C.4 step 4 for rationale); permissions are NOT cached across deliveries.
+- `comment_commands.allowed_authors` (list of strings, OPTIONAL)
+  - When non-empty, an explicit allowlist of GitHub logins. Authors in this list bypass the
+    `allowed_permissions` check. Useful for narrowly authorizing specific operators on
+    public repos.
+- `comment_commands.commands` (list of strings, OPTIONAL)
+  - Subset of the canonical command names listed in Section C.3. Default: all canonical
+    commands. Use this to disable a specific command (e.g. drop `stop` for read-only
+    deployments).
+- `comment_commands.reaction_acknowledge` (string, OPTIONAL)
+  - When set to a GitHub reaction content (e.g. `eyes`, `+1`, `rocket`), the implementation
+    MAY post that reaction on the triggering comment as a synchronous acknowledgement. When
+    unset or null, no reaction is posted. Posting reactions consumes a GraphQL mutation
+    budget; deployments with very large comment volume MAY want to leave this null.
+
+Cheat-sheet entries:
+
+- `comment_commands.enabled`: boolean, default `false`
+- `comment_commands.bot_login`: string, REQUIRED when enabled
+- `comment_commands.allowed_permissions`: list of strings, default `["ADMIN","MAINTAIN","WRITE"]`
+- `comment_commands.allowed_authors`: list of strings, default empty
+- `comment_commands.commands`: list of strings, default all canonical commands
+- `comment_commands.reaction_acknowledge`: string or null, default null
+
+### C.2 Trigger Events
+
+Comment commands are processed on the following webhook events (subscribed via Appendix B):
+
+- `issue_comment.created`, `issue_comment.edited`
+- `pull_request_review_comment.created`, `pull_request_review_comment.edited`
+
+PR-level conversation comments fire `issue_comment`, NOT `pull_request_review_comment`. The
+latter is fired only for inline diff comments. Both subscriptions are required for full PR
+coverage.
+
+`deleted` actions are intentionally ignored: a command's effect persists past comment
+deletion, and processing deletions would let an actor cancel their own command after the
+fact in a way that diverges from the visible comment history.
+
+### C.3 Canonical Commands
+
+The mention prefix is `@<comment_commands.bot_login>`. Commands are case-insensitive,
+single-line, and parsed only when the prefix appears at the start of a comment body line
+(ignoring leading whitespace). Multiple commands in one comment are NOT supported in this
+spec version; the first matching command on the first matching line wins. Subsequent
+commands in the same comment SHOULD be logged but ignored.
+
+The following lines MUST be ignored when scanning for commands. They are common Markdown
+constructs that allow third parties to forge command-like text inside an unrelated
+comment, and accepting them would be a privilege-escalation vector on shared repos:
+
+- Lines that begin (after leading whitespace) with `>` — Markdown blockquote, often a
+  reply that quotes another comment verbatim.
+- Lines inside a fenced code block, where a fence is a line whose first non-whitespace
+  token is `\`\`\`` or `~~~` and the matching closing fence is the next line with the same
+  fence character. Open-but-unclosed fences MUST also suppress every following line. (A
+  user who needs to lead a comment with a code block and then issue a command must close
+  the block with a matching fence before the command line.)
+- Lines inside a four-space-indented code block (legacy Markdown indented-code syntax).
+
+Implementations MAY parse the comment body as Markdown to apply these exclusions, or apply
+the line-level heuristic above; both are acceptable.
+
+| Command | Effect | Notes |
+|---|---|---|
+| `@bot retry` | Schedule an immediate retry of the issue/PR identified by the comment's parent. | If the issue is not currently claimed, falls back to a normal dispatch attempt subject to all eligibility rules. Issues that fail the dependency gate (Section 8.2.1) are not retried — the claim is released and a `comment_command_skipped` log entry SHOULD record the gate reason so the operator can see why the command did not produce a run. |
+| `@bot pause` | Add the issue to an in-memory pause set; the orchestrator skips dispatch for paused issues. | Persists for the lifetime of the orchestrator process only — restart clears the set. |
+| `@bot resume` | Remove the issue from the pause set. | No-op if not paused. |
+| `@bot stop` | Terminate the running worker for the issue (if any) without workspace cleanup; leave the issue in `claimed` until the next reconciliation re-evaluates. | If the issue is not running, equivalent to `pause`. |
+| `@bot status` | Reply with a short status comment summarizing the orchestrator's current view of this issue (running session id, attempt count, last event, paused state). | Always allowed — informational only. |
+
+Implementations MAY add deployment-specific commands as long as they:
+
+1. Use a distinct prefix (e.g. `@bot ext.<name>`) to avoid colliding with future canonical
+   commands.
+2. Document them clearly in the deployment's runbook.
+3. Apply the same author-authorization rules (Section C.4).
+
+### C.4 Author Authorization
+
+For every command:
+
+1. Resolve `comment.user.login` from the webhook payload.
+2. If `comment.user.login == comment_commands.bot_login`, ignore the comment silently
+   (Symphony's own status replies must not retrigger commands).
+3. If `comment_commands.allowed_authors` is non-empty AND `comment.user.login` is in that
+   list, allow the command and skip the permission check.
+4. Otherwise, query the author's **effective** repository permission for the comment's
+   repository. Use the REST endpoint, not GraphQL:
+
+   ```http
+   GET /repos/{owner}/{repo}/collaborators/{login}/permission
+   Authorization: Bearer <tracker.api_token>
+   Accept: application/vnd.github+json
+   ```
+
+   The response includes `permission` (one of `read`, `triage`, `write`, `maintain`,
+   `admin`, or `none`) and `role_name`. This endpoint returns the **effective** permission
+   merging direct collaborator grants and team-membership grants — the GraphQL
+   `repository.collaborators(query:)` connection silently omits org members whose access
+   comes only via team membership, which is the common case in real organizations.
+
+   The resolved `permission` (compared case-insensitively to
+   `comment_commands.allowed_permissions`) MUST be in the allowlist for the command to be
+   honored. A `permission` of `none` MUST be rejected.
+
+   Implementations on GitHub Enterprise Server MAY substitute the equivalent
+   `/api/v3/repos/...` path; the response shape is identical.
+
+   This endpoint requires org-level `Members: Read` (fine-grained PAT) or `members: read`
+   (GitHub App) — see Section 11.6. A token scoped only to repository permissions returns
+   HTTP 403 here even though it can read everything else the spec requires; preflight
+   raises `comment_commands_token_insufficient` (Section C.6) so the misconfiguration is
+   surfaced at startup rather than at first-command time.
+
+5. If authorization fails, the implementation:
+   - MUST NOT execute the command,
+   - SHOULD post a one-line reply comment with the reason
+     (`unauthorized: requires WRITE or higher`), unless
+     `comment_commands.reaction_acknowledge` is null AND the deployment opts out of all
+     reply traffic via deployment policy,
+   - MUST log the rejection with author login, command name, and resolved permission.
+
+The rejection comment posting itself must NOT honor commands embedded in author profile
+text or anywhere else; the implementation parses commands only from the structured comment
+bodies of the events listed in Section C.2.
+
+### C.5 Idempotency and Comment Edits
+
+`issue_comment.edited` deliveries MAY contain a previously-seen command (from the original
+`created` event) plus new text. The implementation:
+
+- SHOULD compare the previous body (available in `changes.body.from` for `edited` events)
+  with the current body. If the canonical command on the matching line is unchanged, the
+  edit is treated as a no-op.
+- SHOULD process the command if and only if the canonical command on the matching line is
+  newly introduced or changed by the edit.
+- MUST honor the dedup window in Appendix B.3 to prevent rapid edit-storms from amplifying
+  command frequency.
+
+### C.6 Validation and Errors
+
+Dispatch preflight additions (Section 6.3) when `comment_commands.enabled == true`:
+
+- `comment_commands_bot_login_missing`: `comment_commands.bot_login` is unset.
+- `comment_commands_requires_webhook`: `webhook.enabled` is `false`. The comment control
+  plane has no polling-mode equivalent in this specification version.
+- `comment_commands_token_insufficient`: a one-shot probe of
+  `GET /repos/{owner}/{repo}/collaborators/{login}/permission` (using
+  `comment_commands.bot_login` as the test login against any repository in the polled
+  project) returned HTTP 401 or HTTP 403. The token lacks the org-level `Members: Read`
+  permission required to resolve comment-author permission (§11.6). The implementation
+  MUST run this probe at startup and on workflow reloads that change `tracker.api_token`
+  or `comment_commands.enabled`. Dispatch is not blocked, but commands are refused with a
+  visible operator warning until the token is corrected.
+
+Receiver-side log categories:
+
+- `comment_command_unauthorized` (with author login, resolved permission, rejected command)
+- `comment_command_unknown` (the parsed command is not in `comment_commands.commands`)
+- `comment_command_self_loop_skipped` (author is `comment_commands.bot_login`)
+- `comment_command_executed` (with author login, command, target issue identifier)
+- `comment_command_skipped` (the command was authorized and parsed but produced no run —
+  for example a `retry` whose target is currently held by the dependency gate; payload
+  includes the skip reason)
+
+### C.7 Security Notes
+
+- Command authorization checks MUST NOT trust webhook payload fields like
+  `comment.author_association` as a permission proxy. `author_association` reflects an
+  author's relationship to the repository at comment time, but its enum (`OWNER`, `MEMBER`,
+  `COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `MANNEQUIN`,
+  `NONE`) is informational and does not map cleanly onto write capability. Always resolve
+  via the REST endpoint described in Section C.4 step 4.
+- Comment bodies are arbitrary user input. Any content the agent receives via the comment
+  control plane (for example via a future `@bot run <freeform>` extension) MUST be treated
+  with the same caution as tracker data per Section 15.5.
+- The pause set is in-memory only and clears on restart. Implementations that want
+  persistent pausing SHOULD use a label (e.g. `symphony:paused`) plus an
+  `include_kinds`/`active_states` filter, or extend `tracker.repo` semantics — not in-memory
+  state.
+
+### C.8 Conformance Notes
+
+This appendix is `Extension Conformance`. Implementations that do not ship the comment
+control plane MUST still validate that `comment_commands.enabled` defaults to `false`. When
+shipped, the test matrix MUST cover: bot self-loop suppression (C.4 step 2),
+`allowed_authors` bypass, permission-denied flow, command-not-in-`commands`-list rejection,
+edit no-op (C.5), and webhook prerequisite validation (C.6).
+
+
