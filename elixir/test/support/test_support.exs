@@ -92,13 +92,19 @@ defmodule SymphonyElixir.TestSupport do
     config =
       Keyword.merge(
         [
-          tracker_kind: "linear",
-          tracker_endpoint: "https://api.linear.app/graphql",
-          tracker_api_token: "token",
-          tracker_project_slug: "project",
-          tracker_assignee: nil,
-          tracker_active_states: ["Todo", "In Progress"],
-          tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+          tracker_kind: "github",
+          tracker_endpoint: "https://api.github.com/graphql",
+          tracker_api_token: "ghp_test_token",
+          tracker_owner: "archelab",
+          tracker_owner_type: "organization",
+          tracker_project_number: 1,
+          tracker_project_id: nil,
+          tracker_repo: "symphony",
+          tracker_status_field: "Status",
+          tracker_include_kinds: ["issue", "pull_request"],
+          tracker_active_states: ["Agent Ready", "In Progress", "Rework"],
+          tracker_terminal_states: ["Done"],
+          tracker_dependency_gating_states: ["Agent Ready"],
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           worker_ssh_hosts: [],
@@ -132,10 +138,16 @@ defmodule SymphonyElixir.TestSupport do
     tracker_kind = Keyword.get(config, :tracker_kind)
     tracker_endpoint = Keyword.get(config, :tracker_endpoint)
     tracker_api_token = Keyword.get(config, :tracker_api_token)
-    tracker_project_slug = Keyword.get(config, :tracker_project_slug)
-    tracker_assignee = Keyword.get(config, :tracker_assignee)
+    tracker_owner = Keyword.get(config, :tracker_owner)
+    tracker_owner_type = Keyword.get(config, :tracker_owner_type)
+    tracker_project_number = Keyword.get(config, :tracker_project_number)
+    tracker_project_id = Keyword.get(config, :tracker_project_id)
+    tracker_repo = Keyword.get(config, :tracker_repo)
+    tracker_status_field = Keyword.get(config, :tracker_status_field)
+    tracker_include_kinds = Keyword.get(config, :tracker_include_kinds)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
+    tracker_dependency_gating_states = Keyword.get(config, :tracker_dependency_gating_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
@@ -169,11 +181,17 @@ defmodule SymphonyElixir.TestSupport do
         "tracker:",
         "  kind: #{yaml_value(tracker_kind)}",
         "  endpoint: #{yaml_value(tracker_endpoint)}",
-        "  api_key: #{yaml_value(tracker_api_token)}",
-        "  project_slug: #{yaml_value(tracker_project_slug)}",
-        "  assignee: #{yaml_value(tracker_assignee)}",
+        "  api_token: #{yaml_value(tracker_api_token)}",
+        "  owner: #{yaml_value(tracker_owner)}",
+        "  owner_type: #{yaml_value(tracker_owner_type)}",
+        "  project_number: #{yaml_value(tracker_project_number)}",
+        "  project_id: #{yaml_value(tracker_project_id)}",
+        "  repo: #{yaml_value(tracker_repo)}",
+        "  status_field: #{yaml_value(tracker_status_field)}",
+        "  include_kinds: #{yaml_value(tracker_include_kinds)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
+        "  dependency_gating_states: #{yaml_value(tracker_dependency_gating_states)}",
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
