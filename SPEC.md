@@ -349,7 +349,11 @@ Fields:
 - `running` (map `issue_id -> running entry`)
 - `claimed` (set of issue IDs reserved/running/retrying)
 - `retry_attempts` (map `issue_id -> RetryEntry`)
-- `completed` (set of issue IDs; bookkeeping only, not dispatch gating)
+- `completed` (map `issue_id -> %{completed_at: timestamp}`; bookkeeping only, not
+  dispatch gating). Implementations MAY keep this as a plain set if they do not
+  surface `last_run_completed_at` to prompts (Section 12.3); the map shape is
+  REQUIRED only when the OPTIONAL `last_run_completed_at` template variable is
+  exposed.
 - `codex_totals` (aggregate tokens + runtime seconds)
 - `codex_rate_limits` (latest rate-limit snapshot from agent events)
 
@@ -2004,6 +2008,14 @@ instructions for:
 - continuation run after a successful prior session
 - retry after error/timeout/stall
 
+Implementations SHOULD additionally expose `last_run_completed_at` (RFC3339 timestamp
+or null) so prompts can convey workspace freshness on continuation runs. This is
+particularly useful for human-driven re-dispatch flows (for example a Project Status
+moved back from "In Review" to "Rework") where the agent needs to scope its read of
+new tracker comments and review threads since the previous session ended. Templates
+MAY ignore the variable; implementations that do not record per-issue completion
+timestamps in their `completed` bookkeeping (Section 4.1.8) MAY pass null.
+
 ### 12.4 Failure Semantics
 
 If prompt rendering fails:
@@ -2030,6 +2042,26 @@ Message formatting requirements:
 - Include action outcome (`completed`, `failed`, `retrying`, etc.).
 - Include concise failure reason when present.
 - Avoid logging large raw payloads unless necessary.
+
+Worker-stop reason vocabulary (RECOMMENDED). Reconciliation log entries that record
+why a running worker was stopped SHOULD use a stable token from the following set so
+operators consuming logs across implementations see one vocabulary:
+
+- `reconciled_missing` — the project item disappeared between polls (no longer
+  resolves via `nodes(ids:)`).
+- `terminal_or_closed` — the underlying Issue or PR transitioned to `CLOSED` while
+  the project Status was still active (terminal-OR rule, Section 11.2.1).
+- `terminal_or_merged` — the underlying PR was merged while the project Status was
+  still active.
+- `terminal_state` — the project Status field reached a value in `terminal_states`.
+- `inactive_state` — the project Status field left `active_states` to a non-terminal
+  value (for example `In Review`).
+- `dependencies_reopened` — `gate_running_on_dependencies` is true and a previously
+  resolved blocker transitioned back to open during reconciliation (Section 8.5
+  Part C).
+
+Implementations MAY add deployment-specific tokens, but SHOULD prefix them
+(`ext_<name>`) to avoid colliding with future canonical vocabulary additions.
 
 ### 13.2 Logging Outputs and Sinks
 
@@ -3037,6 +3069,34 @@ Use the same validation profiles as Section 17:
 - TODO: Add first-class tracker write APIs (Project Status updates, comments, state
   transitions) in the orchestrator instead of only via agent tools.
 - TODO: Add pluggable issue tracker adapters beyond GitHub.
+
+### 18.2.1 `github_graphql` Tool Safety (RECOMMENDED)
+
+Implementations of the `github_graphql` extension SHOULD constrain mutations to an
+operator-visible allowlist enforced at tool invocation time. Queries (read-only
+operations) SHOULD be unrestricted because the configured `tracker.api_token` already
+bounds their visibility.
+
+The default RECOMMENDED mutation allowlist covers the tracker-write operations a
+coding agent legitimately needs while excluding destructive or
+broadly-permissioned operations:
+
+- `addComment`
+- `updateProjectV2ItemFieldValue`
+- `addLabelsToLabelable`, `removeLabelsFromLabelable`
+- `requestReviews`, `addPullRequestReview`, `resolveReviewThread`
+
+Allowlist enforcement SHOULD be operator-configurable so deployments with broader
+trust can opt into additional mutations (for example `closeIssue`, `mergePullRequest`,
+`createRef`) without forking the implementation. Deployments SHOULD log every
+allowlisted-mutation invocation through orchestrator observability with the mutation
+name, the resolved `issue_id`, and the agent `session_id`.
+
+Mutation-name extraction is implementation-defined but SHOULD recognize both
+single-mutation and named-mutation syntaxes (`mutation { addComment(...) { ... } }`
+and `mutation Op { addComment(...) { ... } }`). Implementations that cannot extract
+the mutation name (for example a malformed GraphQL document) MUST reject the call
+with a `mutation_unparseable` error rather than passing it through.
 
 ### 18.3 Operational Validation Before Production (RECOMMENDED)
 
