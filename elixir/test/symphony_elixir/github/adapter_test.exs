@@ -1,5 +1,12 @@
 defmodule SymphonyElixir.Github.AdapterTest do
   use SymphonyElixir.TestSupport
+
+  # Must remain sync — tests share `Application.put_env(:symphony_elixir,
+  # :github_client, ...)` and would race under `async: true`. The
+  # `SymphonyElixir.TestSupport` macro defaults to sync (no `async: true`).
+  # Do NOT flip to async without removing the shared Application env state.
+  @moduletag :async_unsafe
+
   alias SymphonyElixir.Github.{Adapter, RateLimitGate}
 
   defmodule FakeClient do

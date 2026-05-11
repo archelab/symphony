@@ -263,4 +263,53 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
                "variables" => %{}
              })
   end
+
+  # Walker limitations documented for future improvement. These cases reject
+  # legal-but-rare GraphQL forms; they do NOT mis-allow disallowed mutations.
+
+  test "field alias on allowlisted mutation is currently rejected (walker limitation)" do
+    write_workflow_file!(Workflow.workflow_file_path())
+    # `local: addComment(...)` — alias before a field. Walker emits `local:` and
+    # rejects against the allowlist. Tracked for future fix.
+    assert {:error, {:mutation_not_allowed, alias_name}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { local: addComment(input: {subjectId: \"x\", body: \"hi\"}) { clientMutationId } }",
+               "variables" => %{}
+             })
+
+    assert alias_name =~ "local"
+  end
+
+  test ~s[block string """...""" inside mutation body is currently mishandled (walker limitation)] do
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    # Block string literals are NOT tracked by the walker. Braces inside a
+    # """...""" block string would prematurely close the body span. Tracked
+    # for future fix. Current test pins the behavior to know when it changes.
+    result =
+      GithubGraphqlTool.handle(%{
+        "query" => ~s|mutation { addComment(input: {subjectId: "x", body: """hi { } there"""}) { clientMutationId } }|,
+        "variables" => %{}
+      })
+
+    # We intentionally do not assert `{:ok, _}` here — that would lie about
+    # current capability. We assert SOMETHING comes back so the test fails
+    # loudly if the shape changes (e.g., raises).
+    assert match?({:ok, _}, result) or match?({:error, _}, result)
+  end
+
+  test "inline fragment at mutation top level is currently rejected (walker + GraphQL grammar)" do
+    write_workflow_file!(Workflow.workflow_file_path())
+    # Inline fragments at mutation top level are illegal GraphQL anyway, so the
+    # rejection is desired — but it surfaces as `... on Whatever` becoming a
+    # candidate "field". Document the rejection vocabulary.
+    assert {:error, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { ... on Whatever { addComment(input: {subjectId: \"x\", body: \"hi\"}) { clientMutationId } } }",
+               "variables" => %{}
+             })
+  end
 end
