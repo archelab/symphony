@@ -7,7 +7,7 @@ defmodule SymphonyElixir.GithubLiveTest do
   use SymphonyElixir.TestSupport
   @moduletag :live_github
 
-  alias SymphonyElixir.Github.Adapter
+  alias SymphonyElixir.Github.{Adapter, Issue}
 
   setup do
     # Module is tagged :live_github and excluded by `mix test_strict`. When
@@ -77,5 +77,26 @@ defmodule SymphonyElixir.GithubLiveTest do
              _ -> false
            end),
            "Every Status option must be a {name, id} pair of binaries"
+  end
+
+  test "Tracker.fetch_candidate_issues/0 routes to Github.Adapter (post-cutover)" do
+    assert {:ok, issues} = SymphonyElixir.Tracker.fetch_candidate_issues()
+    assert is_list(issues)
+    # If any issues exist, they must be normalized through Github.Issue, not the
+    # Linear shape. A regression where Tracker.adapter/0 returns Linear.Adapter
+    # would surface here as a struct-type mismatch.
+    Enum.each(issues, fn issue ->
+      assert %Issue{} = issue
+    end)
+  end
+
+  test "github_graphql tool smoke-tests viewer{login} against real GitHub" do
+    assert {:ok, %{"data" => %{"viewer" => %{"login" => login}}}} =
+             SymphonyElixir.Codex.GithubGraphqlTool.handle(%{
+               "query" => "query { viewer { login } }",
+               "variables" => %{}
+             })
+
+    assert is_binary(login)
   end
 end
