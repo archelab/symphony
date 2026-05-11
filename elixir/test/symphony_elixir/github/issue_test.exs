@@ -142,6 +142,89 @@ defmodule SymphonyElixir.Github.IssueTest do
     assert b2.state == "Done"
   end
 
+  describe "content_id (SPEC §11.8.5 subject_id)" do
+    # `content_id` is the underlying Issue/PullRequest/DraftIssue node id
+    # (`I_*` / `PR_*` / `DI_*`). It is DISTINCT from `id`, which is the
+    # ProjectV2Item node id (`PVTI_*`). The Agent Workpad Protocol uses it
+    # as the `subjectId` argument to `addComment` / `updateIssueComment`.
+
+    test "Issue.new/1 accepts and stores content_id" do
+      issue =
+        Issue.new(%{
+          id: "PVTI_iss_xyz",
+          identifier: "archelab/symphony#42",
+          kind: "issue",
+          content_id: "I_xyz",
+          state: "Agent Ready",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          number: 42,
+          labels: [],
+          blocked_by: [],
+          url: "https://github.com/archelab/symphony/issues/42",
+          issue_state: "OPEN"
+        })
+
+      assert issue.content_id == "I_xyz"
+      assert issue.id == "PVTI_iss_xyz"
+    end
+
+    test "Issue.new/1 defaults content_id to nil when omitted" do
+      issue =
+        Issue.new(%{
+          id: "PVTI_iss_xyz",
+          identifier: "archelab/symphony#42",
+          kind: "issue",
+          state: "Agent Ready",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          number: 42,
+          labels: [],
+          blocked_by: [],
+          url: "https://github.com/archelab/symphony/issues/42",
+          issue_state: "OPEN"
+        })
+
+      assert issue.content_id == nil
+    end
+
+    test "Issue.new/1 stores PR_* content_id for pull_request kind" do
+      issue =
+        Issue.new(%{
+          id: "PVTI_pr_xyz",
+          identifier: "archelab/symphony#7",
+          kind: "pull_request",
+          content_id: "PR_xyz",
+          state: "In Progress",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          number: 7,
+          labels: [],
+          blocked_by: [],
+          url: "https://github.com/archelab/symphony/pull/7",
+          issue_state: "OPEN"
+        })
+
+      assert issue.content_id == "PR_xyz"
+    end
+
+    test "Issue.new/1 stores DI_* content_id for draft_issue kind" do
+      issue =
+        Issue.new(%{
+          id: "PVTI_draft_xyz",
+          identifier: "draft:af6gQ123",
+          kind: "draft_issue",
+          content_id: "DI_af6gQ123abcdef",
+          state: "Todo",
+          repository: nil,
+          number: nil,
+          labels: [],
+          blocked_by: [],
+          url: nil,
+          issue_state: nil
+        })
+
+      assert issue.content_id == "DI_af6gQ123abcdef"
+    end
+  end
+
   test "Issue.new accepts pre-built %Repository{} and %PR{} structs without re-wrapping" do
     repo = %SymphonyElixir.Github.Issue.Repository{
       owner: "a",

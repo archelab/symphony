@@ -54,6 +54,7 @@ defmodule SymphonyElixir.Github.Issue do
     :id,
     :identifier,
     :kind,
+    :content_id,
     :title,
     :description,
     :priority,
@@ -70,10 +71,20 @@ defmodule SymphonyElixir.Github.Issue do
     :updated_at
   ]
 
+  @typedoc """
+  Normalized GitHub issue/PR/draft-issue.
+
+  `id` is the Project v2 item node id (`PVTI_*`) — what the orchestrator keys
+  state and dispatches on. `content_id` is the underlying Issue/PullRequest/
+  DraftIssue node id (`I_*` / `PR_*` / `DI_*`) — the subject id for §11.8
+  workpad `addComment` / `updateIssueComment` mutations. The two are
+  DISTINCT; do not conflate them.
+  """
   @type t :: %__MODULE__{
           id: String.t(),
           identifier: String.t(),
           kind: String.t(),
+          content_id: String.t() | nil,
           title: String.t(),
           description: String.t() | nil,
           priority: integer() | nil,
@@ -96,6 +107,7 @@ defmodule SymphonyElixir.Github.Issue do
       id: Map.fetch!(attrs, :id),
       identifier: Map.fetch!(attrs, :identifier),
       kind: Map.fetch!(attrs, :kind),
+      content_id: Map.get(attrs, :content_id),
       title: Map.get(attrs, :title, ""),
       description: Map.get(attrs, :description),
       priority: Map.get(attrs, :priority),

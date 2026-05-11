@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Github.NormalizeTest do
 
     assert {:ok, %Issue{} = issue} = Normalize.item(item, status_field: "Status")
     assert issue.id == "PVTI_iss1"
+    assert issue.content_id == "I_iss1"
     assert issue.identifier == "archelab/symphony#42"
     assert issue.kind == "issue"
     assert issue.state == "Agent Ready"
@@ -36,6 +37,7 @@ defmodule SymphonyElixir.Github.NormalizeTest do
 
     assert {:ok, %Issue{kind: "pull_request"} = issue} = Normalize.item(item, status_field: "Status")
     assert issue.identifier == "archelab/symphony#3"
+    assert issue.content_id == "PR_m"
     assert issue.branch_name == "old-branch"
     assert issue.pr.state == "MERGED"
     assert issue.pr.merged == true
@@ -68,6 +70,10 @@ defmodule SymphonyElixir.Github.NormalizeTest do
     assert String.length(short) == 8
     assert issue.repository == nil
     assert issue.url == nil
+    # SPEC §11.8.5: content_id is captured for all kinds, including DraftIssue
+    # (DI_*), even though §11.8 protocol itself skips draft_issue subjects
+    # because DraftIssue is not Commentable.
+    assert issue.content_id == "DI_AF6gQ123abcdef"
   end
 
   # ------------------------------------------------------------------
