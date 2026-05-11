@@ -12,7 +12,7 @@ defmodule SymphonyElixir.PromptBuilder do
     sourced from `Orchestrator.State.completed[issue_id][:completed_at]`.
   """
 
-  alias SymphonyElixir.{Config, Workflow}
+  alias SymphonyElixir.{Config, Github.Issue, Workflow}
 
   @render_opts [strict_variables: true, strict_filters: true]
 
@@ -50,11 +50,61 @@ defmodule SymphonyElixir.PromptBuilder do
       "last_run_completed_at" => Keyword.get(opts, :last_run_completed_at)
     }
 
-    case Keyword.fetch(opts, :issue) do
-      {:ok, issue} -> Map.put(base, "issue", issue |> Map.from_struct() |> to_solid_map())
-      :error -> base
+    issue = Keyword.get(opts, :issue)
+
+    base =
+      case issue do
+        nil -> base
+        issue -> Map.put(base, "issue", issue |> Map.from_struct() |> to_solid_map())
+      end
+
+    maybe_put_workpad_vars(base, issue, opts)
+  end
+
+  # SPEC §11.8.5: emit the five workpad variables only when the protocol is
+  # enabled AND the issue is a Commentable kind. Otherwise omit them entirely
+  # so Solid strict mode rejects any template referencing them — desired
+  # fail-fast behavior when an operator enables workpad-mode templates without
+  # flipping the feature flag.
+  defp maybe_put_workpad_vars(base, issue, opts) do
+    if workpad_active?(issue) do
+      base
+      |> Map.put("thread_id", Keyword.get(opts, :thread_id))
+      |> Map.put("dispatched_at", Keyword.get(opts, :dispatched_at))
+      |> Map.put("model", Keyword.get(opts, :model))
+      |> Map.put("subject_id", subject_id_from(issue))
+      |> Map.put("prior_sessions", prior_sessions_to_solid(Keyword.get(opts, :prior_sessions, [])))
+    else
+      base
     end
   end
+
+  # SPEC §11.8.5 + §17.8: the five variables MUST be present AND non-empty
+  # when workpad activates. We treat a missing/blank `content_id` as a hard
+  # block — emitting `subject_id: nil` would render as empty in Liquid and
+  # then the agent's `addComment(subjectId: "")` would fail with a GraphQL
+  # type error far from the root cause. Better to fall back to the
+  # workpad-disabled context shape, which Solid strict mode will reject if
+  # the workflow template references workpad variables — making the data
+  # integrity bug operator-visible at prompt-render time.
+  defp workpad_active?(%Issue{kind: kind, content_id: content_id})
+       when kind in ["issue", "pull_request"] and is_binary(content_id) and content_id != "" do
+    Config.settings!().agent.workpad.enabled == true
+  end
+
+  defp workpad_active?(_), do: false
+
+  defp subject_id_from(%Issue{content_id: content_id}), do: content_id
+
+  defp prior_sessions_to_solid(records) when is_list(records) do
+    Enum.map(records, fn record when is_map(record) ->
+      Map.new(record, fn {k, v} -> {Atom.to_string(k), prior_session_value(v)} end)
+    end)
+  end
+
+  defp prior_session_value(nil), do: nil
+  defp prior_session_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp prior_session_value(value), do: value
 
   defp parse_template(prompt) do
     case Solid.parse(prompt) do

@@ -22,6 +22,7 @@ them against a **dedicated smoke project**, not a production one.
 | E2E-7  | A parent issue with an OPEN sub-issue child is gated. Closing the child unblocks the parent. **Currently failing** — see Notes below. |
 | E2E-8  | The `github_graphql` Codex tool can be called by the agent to post an issue comment end-to-end. |
 | E2E-9  | After a turn completes, flipping Status to Rework re-dispatches the item with the `## Continuation context` section rendered and `Prior session ended at <ts>`. |
+| E2E-10 | Agent Workpad Protocol (SPEC §11.8) round-trips: with `agent.workpad.enabled: true` + a strong `codex.model`, the first dispatch posts a `<!-- symphony-workpad:v1 -->` comment via `addComment`; flipping Status → Done → Rework re-dispatches; the second prompt rolls out with `prior_sessions[0]` referencing the first session's `thread_id`. |
 
 ## Prerequisites
 
@@ -48,6 +49,9 @@ Environment variables (all optional with defaults):
 | `E2E_WORKSPACE_ROOT` | `/tmp/symphony-smoke-workspaces` | Workspace root (mirrored in `workflow.smoke.md`) |
 | `SYMPHONY_E2E_E2E8_MODEL` | `gpt-5.4` | Stronger model for E2E-8 (which needs instruction-following) |
 | `SYMPHONY_E2E_E2E8_REASON` | `low` | Reasoning effort for E2E-8 |
+| `SYMPHONY_E2E_E2E10_MODEL` | `gpt-5.5` | Stronger model for E2E-10 (workpad round-trip needs instruction-following) |
+| `SYMPHONY_E2E_E2E10_REASON` | `low` | Reasoning effort for E2E-10 |
+| `SYMPHONY_E2E_E2E10_MAX_TURNS` | `2` | `agent.max_turns` override for E2E-10 |
 
 ## Running
 
@@ -183,5 +187,6 @@ elixir/scripts/e2e_smoke/
     ├── e2e-6-no-status.sh
     ├── e2e-7-dependency-gating.sh
     ├── e2e-8-agent-comment-via-tool.sh
-    └── e2e-9-rework-continuation.sh
+    ├── e2e-9-rework-continuation.sh
+    └── e2e-10-workpad-roundtrip.sh
 ```

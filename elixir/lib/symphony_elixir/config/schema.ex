@@ -186,12 +186,45 @@ defmodule SymphonyElixir.Config.Schema do
 
     alias SymphonyElixir.Config.Schema
 
+    defmodule Workpad do
+      @moduledoc """
+      Agent Workpad Protocol configuration (SPEC §11.8.9).
+
+      Default field values intentionally duplicate constants in
+      `SymphonyElixir.Workpad.Protocol`: Ecto's `field :default` macro only
+      accepts compile-time literals, not function calls. The lock-step test in
+      `SymphonyElixir.Workpad.ProtocolTest` fails loudly if these drift.
+      """
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      alias SymphonyElixir.Workpad.Protocol
+
+      @primary_key false
+      embedded_schema do
+        field(:enabled, :boolean, default: false)
+        field(:version, :string, default: "v1")
+        field(:max_sessions_visible, :integer, default: 20)
+        field(:update_throttle_turns, :integer, default: 3)
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:enabled, :version, :max_sessions_visible, :update_throttle_turns], empty_values: [])
+        |> validate_inclusion(:version, Protocol.supported_versions(), message: "workpad.version must be one of #{Enum.join(Protocol.supported_versions(), ", ")}")
+        |> validate_number(:max_sessions_visible, greater_than: 0)
+        |> validate_number(:update_throttle_turns, greater_than_or_equal_to: 0)
+      end
+    end
+
     @primary_key false
     embedded_schema do
       field(:max_concurrent_agents, :integer, default: 10)
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      embeds_one(:workpad, Workpad, on_replace: :update, defaults_to_struct: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -202,6 +235,7 @@ defmodule SymphonyElixir.Config.Schema do
         [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
         empty_values: []
       )
+      |> cast_embed(:workpad, with: &Workpad.changeset/2)
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
@@ -211,13 +245,20 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defmodule Codex do
-    @moduledoc false
+    @moduledoc """
+    Codex app-server configuration.
+
+    Operators SHOULD set `codex.model` explicitly when `agent.workpad.enabled`
+    is true so the workpad sessions table records the same model identifier
+    the agent reports per SPEC §11.8.5. Defaults to nil (unspecified).
+    """
     use Ecto.Schema
     import Ecto.Changeset
 
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "codex app-server")
+      field(:model, :string)
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -243,6 +284,7 @@ defmodule SymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
+          :model,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,
@@ -354,16 +396,33 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  defp validate_finalized_settings(%{tracker: %{kind: "github", api_token: token}})
-       when is_binary(token) and token != "" do
-    :ok
+  defp validate_finalized_settings(settings) do
+    with :ok <- validate_tracker_api_token(settings) do
+      validate_workpad_requires_model(settings)
+    end
   end
 
-  defp validate_finalized_settings(%{tracker: %{kind: "github"}}) do
-    {:error, "tracker.api_token missing_tracker_api_token"}
-  end
+  defp validate_tracker_api_token(%{tracker: %{kind: "github", api_token: token}})
+       when is_binary(token) and token != "",
+       do: :ok
 
-  defp validate_finalized_settings(_settings), do: :ok
+  defp validate_tracker_api_token(%{tracker: %{kind: "github"}}),
+    do: {:error, "tracker.api_token missing_tracker_api_token"}
+
+  defp validate_tracker_api_token(_settings), do: :ok
+
+  # SPEC §11.8.5: `model` is a REQUIRED prompt variable when the workpad is
+  # enabled — its value MUST match what the agent self-reports. We refuse to
+  # boot with `agent.workpad.enabled: true` and `codex.model` unset rather
+  # than silently render an empty `model` cell in every workpad row.
+  defp validate_workpad_requires_model(%{agent: %{workpad: %{enabled: true}}, codex: %{model: model}})
+       when is_binary(model) and model != "",
+       do: :ok
+
+  defp validate_workpad_requires_model(%{agent: %{workpad: %{enabled: true}}}),
+    do: {:error, "agent.workpad.enabled requires codex.model to be set (SPEC §11.8.5)"}
+
+  defp validate_workpad_requires_model(_settings), do: :ok
 
   @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do

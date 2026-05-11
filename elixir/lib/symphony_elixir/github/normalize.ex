@@ -32,6 +32,7 @@ defmodule SymphonyElixir.Github.Normalize do
         id: item_id,
         identifier: identifier,
         kind: kind,
+        content_id: content["id"],
         title: content["title"] || "",
         description: content["body"],
         priority: nil,

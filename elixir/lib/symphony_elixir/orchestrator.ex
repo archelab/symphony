@@ -31,6 +31,10 @@ defmodule SymphonyElixir.Orchestrator do
     Per-issue running-worker record. Fields documented inline by the dispatch
     site `spawn_issue_on_worker_host/4`; codex_* fields are written by
     `integrate_codex_update/2`.
+
+    SPEC §11.8.5 fields: `:thread_id`, `:dispatched_at`, `:model` capture
+    workpad-relevant metadata at dispatch time so they survive into the
+    `session_record` history that `complete_issue/3` writes.
     """
     @type running_entry :: %{
             required(:pid) => pid() | nil,
@@ -56,8 +60,32 @@ defmodule SymphonyElixir.Orchestrator do
             required(:retry_attempt) => non_neg_integer(),
             required(:blocked_by_snapshot) => [map()],
             required(:started_at) => DateTime.t(),
+            required(:dispatched_at) => String.t(),
+            required(:thread_id) => String.t() | nil,
+            required(:model) => String.t() | nil,
             optional(:last_refresh_state) => String.t() | nil
           }
+
+    @typedoc """
+    SPEC §11.8.5: one session-history row captured when a running worker
+    terminates. The orchestrator stores most-recent-first lists keyed by
+    issue id under `State.completed`.
+    """
+    @type session_record :: %{
+            required(:thread_id) => String.t() | nil,
+            required(:attempt) => non_neg_integer(),
+            required(:dispatched_at) => String.t(),
+            required(:completed_at) => String.t(),
+            required(:duration_ms) => non_neg_integer(),
+            required(:model) => String.t() | nil,
+            required(:stop_reason) => atom() | nil
+          }
+
+    @typedoc """
+    SPEC §11.8.5 completed map: per-issue history of session records, head
+    is the most recent. Pruned to `agent.workpad.max_sessions_visible`.
+    """
+    @type completed_map :: %{optional(String.t()) => [session_record()]}
 
     @typedoc """
     Per-issue retry record. `timer_ref` and `retry_token` are paired so a stale
@@ -92,7 +120,7 @@ defmodule SymphonyElixir.Orchestrator do
             tick_timer_ref: reference() | nil,
             tick_token: reference() | nil,
             running: %{optional(String.t()) => running_entry()},
-            completed: %{optional(String.t()) => %{completed_at: String.t()}},
+            completed: completed_map(),
             claimed: MapSet.t(String.t()),
             retry_attempts: %{optional(String.t()) => retry_entry()},
             codex_totals: codex_totals() | nil,
@@ -107,9 +135,10 @@ defmodule SymphonyElixir.Orchestrator do
       :tick_timer_ref,
       :tick_token,
       running: %{},
-      # SPEC §4.1.8: `completed` upgrades from MapSet to a map
-      # issue_id → %{completed_at: iso8601} so the prompt builder (Task 7)
-      # can derive last_run_completed_at.
+      # SPEC §4.1.8 + §11.8.5: `completed` is now a map issue_id → [session_record, ...]
+      # (most-recent-first list) so the prompt builder can both derive
+      # `last_run_completed_at` (head record) and surface `prior_sessions` to
+      # the agent workpad. Pruned to `agent.workpad.max_sessions_visible`.
       completed: %{},
       claimed: MapSet.new(),
       retry_attempts: %{},
@@ -195,12 +224,16 @@ defmodule SymphonyElixir.Orchestrator do
         # directly to avoid the double-cleanup risk.
         log_worker_stop(running_entry, stop_reason)
 
+        # SPEC §11.8.3 + §11.8.5: record EVERY session — normal AND abnormal —
+        # so the next dispatched session can patch the prior row's Ended /
+        # Duration / Stop reason via `prior_sessions[0]`. Crashes that go
+        # unrecorded would leave a permanent "—" row in the workpad table.
+        state = complete_issue(state, issue_id, running_entry, stop_reason)
+
         state =
           case reason do
             :normal ->
-              state
-              |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{
+              schedule_issue_retry(state, issue_id, 1, %{
                 identifier: running_entry.identifier,
                 delay_type: :continuation,
                 worker_host: Map.get(running_entry, :worker_host),
@@ -262,6 +295,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  # SPEC §11.8.5: capture the agent's Codex thread id into the running entry
+  # as soon as `AppServer.start_session/2` returns it. The id is then forwarded
+  # into the eventual `session_record` written by `complete_issue/4`.
+  def handle_info({:codex_thread_started, issue_id, thread_id}, %{running: running} = state)
+      when is_binary(issue_id) and is_binary(thread_id) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        updated = Map.put(running_entry, :thread_id, thread_id)
+        {:noreply, %{state | running: Map.put(running, issue_id, updated)}}
+    end
+  end
+
+  def handle_info({:codex_thread_started, _issue_id, _thread_id}, state), do: {:noreply, state}
 
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
@@ -409,9 +459,29 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  # Test seam for the stall-detection path. Drives the same code path the
+  # poll tick uses so a refactor cannot drift `reconcile_stalled_running_issues`
+  # silently — and exercises §11.8.3's "record every session" requirement for
+  # :stall_restart.
+  @spec apply_reconcile_stalled_runs_for_test(State.t()) :: State.t()
+  def apply_reconcile_stalled_runs_for_test(%State{} = state) do
+    reconcile_stalled_running_issues(state)
+  end
+
+  @doc false
   @spec sort_issues_for_dispatch_for_test([term()]) :: [term()]
   def sort_issues_for_dispatch_for_test(issues) when is_list(issues) do
     sort_issues_for_dispatch(issues)
+  end
+
+  @doc false
+  # Test seam for `dispatch_eligible?/3`. Public so the SPEC §4.1.8 invariant
+  # ("state.completed is bookkeeping only, not a dispatch gate") has a direct
+  # regression test — a future change that re-introduces a `completed`-keyed
+  # gate would shut out Rework re-dispatch (§11.8.3) silently.
+  @spec dispatch_eligible_for_test(term(), State.t(), term()) :: boolean()
+  def dispatch_eligible_for_test(issue, %State{} = state, tracker_settings) do
+    dispatch_eligible?(issue, state, tracker_settings)
   end
 
   @doc false
@@ -452,6 +522,13 @@ defmodule SymphonyElixir.Orchestrator do
         if is_reference(ref) do
           Process.demonitor(ref, [:flush])
         end
+
+        # SPEC §11.8.3 + §11.8.5: capture EVERY terminated session — including
+        # stall_restart — into the workpad history before the running entry is
+        # dropped. Stall restart re-dispatches under a NEW Codex thread id,
+        # producing a distinct workpad row keyed by thread (not attempt), so
+        # recording it does not double-count the run.
+        state = complete_issue(state, issue_id, running_entry, reason)
 
         %{
           state
@@ -586,17 +663,25 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   # Live dispatch gate: spec semantics (§11.2.1 terminal-OR + §8.2.1 gating) AND
-  # local capacity guards (claim, running, completed, per-state cap, ssh worker
-  # cap). `dispatchable?/2` is the spec predicate; everything else here is
-  # orchestrator-local bookkeeping.
-  defp dispatch_eligible?(issue, %State{running: running, claimed: claimed, completed: completed} = state, tracker_settings) do
+  # local capacity guards (claim, running, per-state cap, ssh worker cap).
+  # `dispatchable?/2` is the spec predicate; everything else is orchestrator-
+  # local bookkeeping.
+  #
+  # SPEC §4.1.8: `state.completed` is bookkeeping only, NOT a dispatch gate.
+  # `state.claimed` is the actual concurrency-of-dispatch signal — it stays
+  # set across continuation retries and is only released by the retry timer
+  # when the issue leaves Active/terminal. Gating on `completed` here would
+  # permanently shut out an issue after a crash whose retry chain was torn
+  # down (e.g., crash → status moved out of Active mid-retry → release_issue_
+  # claim cleared `claimed` → user moves status back to Active to re-trigger).
+  # The Rework re-dispatch flow (§11.8.3) relies on this gate being claim-only.
+  defp dispatch_eligible?(issue, %State{running: running, claimed: claimed} = state, tracker_settings) do
     issue_id = Map.get(issue, :id)
 
     dispatchable?(issue, tracker_settings) and
       is_binary(issue_id) and
       !MapSet.member?(claimed, issue_id) and
       !Map.has_key?(running, issue_id) and
-      !Map.has_key?(completed, issue_id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running) and
       worker_slots_available?(state)
@@ -859,13 +944,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
-    last_run_completed_at = get_in(state.completed, [issue.id, :completed_at])
+    last_run_completed_at = head_completed_at(state.completed, issue.id)
+    started_at = DateTime.utc_now()
+    dispatched_at = DateTime.to_iso8601(started_at)
+    model = codex_model_snapshot()
+    # Belt-and-braces: `prune_sessions/1` already caps at `max_sessions/0` on
+    # every write, but a future write path that bypassed pruning would let
+    # the agent's prompt grow unbounded. Apply the same cap on read.
+    prior_sessions = state.completed |> Map.get(issue.id, []) |> Enum.take(max_sessions())
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient,
              attempt: attempt,
              worker_host: worker_host,
-             last_run_completed_at: last_run_completed_at
+             last_run_completed_at: last_run_completed_at,
+             prior_sessions: prior_sessions,
+             dispatched_at: dispatched_at,
+             model: model
            )
          end) do
       {:ok, pid} ->
@@ -897,7 +992,10 @@ defmodule SymphonyElixir.Orchestrator do
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
             blocked_by_snapshot: Map.get(issue, :blocked_by, []) || [],
-            started_at: DateTime.utc_now()
+            started_at: started_at,
+            dispatched_at: dispatched_at,
+            thread_id: nil,
+            model: model
           })
 
         %{
@@ -963,15 +1061,64 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp complete_issue(%State{} = state, issue_id) do
+  # SPEC §11.8.5: append the latest session record to the per-issue list
+  # (most-recent-first), prune to `max_sessions/0`, and drop any pending retry.
+  # The running entry carries the fields we need to back-fill `dispatched_at`,
+  # `thread_id`, `model`, and the dispatch attempt; `Map.get/3` shields against
+  # legacy callers that built running entries without the §11.8.5 keys.
+  @spec complete_issue(State.t(), String.t(), State.running_entry(), atom() | nil) :: State.t()
+  defp complete_issue(%State{} = state, issue_id, running_entry, stop_reason)
+       when is_binary(issue_id) and is_map(running_entry) do
     completed_at = DateTime.utc_now() |> DateTime.to_iso8601()
+    record = build_session_record(running_entry, completed_at, stop_reason)
+    prior = Map.get(state.completed, issue_id, [])
+    pruned = prune_sessions([record | prior])
 
     %{
       state
-      | completed: Map.put(state.completed, issue_id, %{completed_at: completed_at}),
+      | completed: Map.put(state.completed, issue_id, pruned),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
   end
+
+  defp build_session_record(running_entry, completed_at, stop_reason)
+       when is_map(running_entry) do
+    %{
+      thread_id: Map.get(running_entry, :thread_id),
+      attempt: Map.get(running_entry, :retry_attempt, 0),
+      dispatched_at: Map.get(running_entry, :dispatched_at, completed_at),
+      completed_at: completed_at,
+      duration_ms: duration_ms_for(running_entry),
+      model: Map.get(running_entry, :model),
+      stop_reason: stop_reason
+    }
+  end
+
+  defp duration_ms_for(%{started_at: %DateTime{} = started_at}) do
+    DateTime.utc_now() |> DateTime.diff(started_at, :millisecond) |> max(0)
+  end
+
+  defp duration_ms_for(_), do: 0
+
+  defp prune_sessions(records) when is_list(records), do: Enum.take(records, max_sessions())
+
+  defp max_sessions, do: Config.settings!().agent.workpad.max_sessions_visible
+
+  # Returns the head (most-recent) `:completed_at` for the issue, or nil if
+  # no prior session exists. Replaces the old `get_in/2` on a single-record
+  # map shape — same observable result for back-compat with PromptBuilder.
+  defp head_completed_at(completed, issue_id) when is_map(completed) and is_binary(issue_id) do
+    case Map.get(completed, issue_id) do
+      [%{completed_at: ts} | _] -> ts
+      _ -> nil
+    end
+  end
+
+  # Snapshot the codex model setting at dispatch time. `codex.model` is
+  # OPTIONAL (SPEC §11.8.5); operators SHOULD set it explicitly when running
+  # under §11.8 so the workpad sessions table records the same identifier
+  # the agent self-reports. Returns nil when unset.
+  defp codex_model_snapshot, do: Config.settings!().codex.model
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
        when is_binary(issue_id) and is_map(metadata) do
