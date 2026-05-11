@@ -27,6 +27,8 @@ defmodule SymphonyElixir.Orchestrator do
     Runtime state for the orchestrator polling loop.
     """
 
+    @type t :: %__MODULE__{}
+
     defstruct [
       :poll_interval_ms,
       :max_concurrent_agents,
@@ -233,12 +235,8 @@ defmodule SymphonyElixir.Orchestrator do
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
     else
-      {:error, :missing_linear_api_token} ->
-        Logger.error("Linear API token missing in WORKFLOW.md")
-        state
-
-      {:error, :missing_linear_project_slug} ->
-        Logger.error("Linear project slug missing in WORKFLOW.md")
+      {:error, :missing_tracker_api_token} ->
+        Logger.error("Tracker API token missing in WORKFLOW.md")
         state
 
       {:error, :missing_tracker_kind} ->
@@ -268,7 +266,7 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+        Logger.error("Failed to fetch from tracker: #{inspect(reason)}")
         state
 
       false ->
@@ -701,8 +699,6 @@ defmodule SymphonyElixir.Orchestrator do
     String.downcase(String.trim(state_name))
   end
 
-  defp normalize_issue_state(_state_name), do: ""
-
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
     tracker_settings = Config.settings!().tracker
 
@@ -870,9 +866,10 @@ defmodule SymphonyElixir.Orchestrator do
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
 
-    if is_reference(old_timer) do
-      Process.cancel_timer(old_timer)
-    end
+    _ =
+      if is_reference(old_timer) do
+        Process.cancel_timer(old_timer)
+      end
 
     timer_ref = Process.send_after(self(), {:retry_issue, issue_id, retry_token}, delay_ms)
 
@@ -1335,9 +1332,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
-    if is_reference(state.tick_timer_ref) do
-      Process.cancel_timer(state.tick_timer_ref)
-    end
+    _ =
+      if is_reference(state.tick_timer_ref) do
+        Process.cancel_timer(state.tick_timer_ref)
+      end
 
     tick_token = make_ref()
     timer_ref = Process.send_after(self(), {:tick, tick_token}, delay_ms)
@@ -1351,7 +1349,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp schedule_poll_cycle_start do
-    :timer.send_after(@poll_transition_render_delay_ms, self(), :run_poll_cycle)
+    _ = :timer.send_after(@poll_transition_render_delay_ms, self(), :run_poll_cycle)
     :ok
   end
 

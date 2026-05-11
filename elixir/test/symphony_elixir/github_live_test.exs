@@ -7,6 +7,7 @@ defmodule SymphonyElixir.GithubLiveTest do
   use SymphonyElixir.TestSupport
   @moduletag :live_github
 
+  alias SymphonyElixir.Codex.GithubGraphqlTool
   alias SymphonyElixir.Github.{Adapter, Issue}
 
   setup do
@@ -60,10 +61,9 @@ defmodule SymphonyElixir.GithubLiveTest do
   end
 
   test "Status field probe resolves a non-empty option set with well-formed shape" do
-    # This board currently has 7 options:
-    #   todo / agent ready / in progress / in review / rework / blocked / done
-    # We don't assert the exact set here — the project board changes over time
-    # and we don't want adapter health tests to go red on a status rename.
+    # The project board exposes a Status field with multiple options. We do
+    # not assert the exact option set here — the board changes over time and
+    # we do not want adapter health tests to go red on a status rename.
     {:ok, _issues} = Adapter.fetch_candidate_issues()
 
     {_cache_key, _project, %{options: options}} =
@@ -82,8 +82,8 @@ defmodule SymphonyElixir.GithubLiveTest do
   test "Tracker.fetch_candidate_issues/0 routes to Github.Adapter (post-cutover)" do
     assert {:ok, issues} = SymphonyElixir.Tracker.fetch_candidate_issues()
     assert is_list(issues)
-    # If any issues exist, they must be normalized through Github.Issue, not the
-    # Linear shape. A regression where Tracker.adapter/0 returns Linear.Adapter
+    # If any issues exist, they must be normalized through Github.Issue.
+    # A regression where Tracker.adapter/0 returns a non-GitHub adapter
     # would surface here as a struct-type mismatch.
     Enum.each(issues, fn issue ->
       assert %Issue{} = issue
@@ -92,7 +92,7 @@ defmodule SymphonyElixir.GithubLiveTest do
 
   test "github_graphql tool smoke-tests viewer{login} against real GitHub" do
     assert {:ok, %{"data" => %{"viewer" => %{"login" => login}}}} =
-             SymphonyElixir.Codex.GithubGraphqlTool.handle(%{
+             GithubGraphqlTool.handle(%{
                "query" => "query { viewer { login } }",
                "variables" => %{}
              })

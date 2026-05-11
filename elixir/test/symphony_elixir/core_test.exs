@@ -1,170 +1,6 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
-  # TODO(Task 8b): test asserts on Linear-era schema fields (tracker.api_key,
-  # tracker.project_slug, tracker.assignee). PR2 Task 8b retargets at the
-  # GitHub schema.
-  @tag :skip_until_task_8b
-  test "config defaults and validation checks" do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
-      tracker_project_slug: nil,
-      poll_interval_ms: nil,
-      tracker_active_states: nil,
-      tracker_terminal_states: nil,
-      codex_command: nil
-    )
-
-    config = Config.settings!()
-    assert config.polling.interval_ms == 30_000
-    assert config.tracker.active_states == ["Todo", "In Progress"]
-    assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
-    assert config.tracker.assignee == nil
-    assert config.agent.max_turns == 20
-
-    write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
-
-    assert_raise ArgumentError, ~r/interval_ms/, fn ->
-      Config.settings!().polling.interval_ms
-    end
-
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "polling.interval_ms"
-
-    write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
-    assert Config.settings!().polling.interval_ms == 45_000
-
-    write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agent.max_turns"
-
-    write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
-    assert Config.settings!().agent.max_turns == 5
-
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "tracker.active_states"
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: "token",
-      tracker_project_slug: nil
-    )
-
-    assert {:error, :missing_linear_project_slug} = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_project_slug: "project",
-      codex_command: ""
-    )
-
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "codex.command"
-    assert message =~ "can't be blank"
-
-    write_workflow_file!(Workflow.workflow_file_path(), codex_command: "   ")
-    assert :ok = Config.validate!()
-    assert Config.settings!().codex.command == "   "
-
-    write_workflow_file!(Workflow.workflow_file_path(), codex_command: "/bin/sh app-server")
-    assert :ok = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: "definitely-not-valid")
-    assert :ok = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: "unsafe-ish")
-    assert :ok = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      codex_turn_sandbox_policy: %{type: "workspaceWrite", writableRoots: ["relative/path"]}
-    )
-
-    assert :ok = Config.validate!()
-
-    write_workflow_file!(Workflow.workflow_file_path(), codex_approval_policy: 123)
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "codex.approval_policy"
-
-    write_workflow_file!(Workflow.workflow_file_path(), codex_thread_sandbox: 123)
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "codex.thread_sandbox"
-
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
-    assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
-  end
-
-  # TODO(Task 8b): test asserts on Linear-era schema fields (tracker.api_key,
-  # tracker.project_slug, tracker.assignee). PR2 Task 8b retargets at the
-  # GitHub schema.
-  @tag :skip_until_task_8b
-  test "current WORKFLOW.md file is valid and complete" do
-    original_workflow_path = Workflow.workflow_file_path()
-    on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
-    Workflow.clear_workflow_file_path()
-
-    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
-    assert is_map(config)
-
-    tracker = Map.get(config, "tracker", %{})
-    assert is_map(tracker)
-    assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
-    assert is_list(Map.get(tracker, "active_states"))
-    assert is_list(Map.get(tracker, "terminal_states"))
-
-    hooks = Map.get(config, "hooks", %{})
-    assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
-    assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
-    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
-
-    assert String.trim(prompt) != ""
-    assert is_binary(Config.workflow_prompt())
-    assert Config.workflow_prompt() == prompt
-  end
-
-  # TODO(Task 8b): test asserts on Linear-era schema fields (tracker.api_key,
-  # tracker.project_slug, tracker.assignee). PR2 Task 8b retargets at the
-  # GitHub schema.
-  @tag :skip_until_task_8b
-  test "linear api token resolves from LINEAR_API_KEY env var" do
-    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
-    env_api_key = "test-linear-api-key"
-
-    on_exit(fn -> restore_env("LINEAR_API_KEY", previous_linear_api_key) end)
-    System.put_env("LINEAR_API_KEY", env_api_key)
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
-      tracker_project_slug: "project",
-      codex_command: "/bin/sh app-server"
-    )
-
-    assert Config.settings!().tracker.api_key == env_api_key
-    assert Config.settings!().tracker.project_slug == "project"
-    assert :ok = Config.validate!()
-  end
-
-  # TODO(Task 8b): test asserts on Linear-era schema fields (tracker.api_key,
-  # tracker.project_slug, tracker.assignee). PR2 Task 8b retargets at the
-  # GitHub schema.
-  @tag :skip_until_task_8b
-  test "linear assignee resolves from LINEAR_ASSIGNEE env var" do
-    previous_linear_assignee = System.get_env("LINEAR_ASSIGNEE")
-    env_assignee = "dev@example.com"
-
-    on_exit(fn -> restore_env("LINEAR_ASSIGNEE", previous_linear_assignee) end)
-    System.put_env("LINEAR_ASSIGNEE", env_assignee)
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_assignee: nil,
-      tracker_project_slug: "project",
-      codex_command: "/bin/sh app-server"
-    )
-
-    assert Config.settings!().tracker.assignee == env_assignee
-  end
-
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
     original_workflow_path = Workflow.workflow_file_path()
 
@@ -235,10 +71,6 @@ defmodule SymphonyElixir.CoreTest do
 
     GenServer.stop(pid)
   end
-
-  # NOTE(Task 8b): Linear.Client wrapper — deleted with linear/client.ex.
-  @tag :skip_until_task_8b
-  test "linear issue state reconciliation fetch with no running issues is a no-op", do: :ok
 
   test "non-active issue state (refresh map) stops running agent without cleaning workspace" do
     test_root =
@@ -495,16 +327,6 @@ defmodule SymphonyElixir.CoreTest do
     assert MapSet.member?(updated_state.claimed, issue_id)
     updated_entry = updated_state.running[issue_id]
     assert updated_entry.blocked_by_snapshot == refreshed_blockers
-  end
-
-  # NOTE(Task 8b): Linear-era assignee-reassignment routing relied on the
-  # orchestrator-side `assigned_to_worker` flag, which is not part of the
-  # GitHub adapter contract — GitHub filters assignees at the GraphQL query
-  # layer, not in the orchestrator reconcile loop. Task 8b reroutes the
-  # "issue left this worker" semantics once the Linear path is retired.
-  @tag :skip_until_task_8b
-  test "reconcile stops running issue when it is reassigned away from this worker" do
-    :ok
   end
 
   test "normal worker exit schedules active-state continuation retry" do
@@ -1145,10 +967,6 @@ defmodule SymphonyElixir.CoreTest do
     assert %{completed_at: timestamp} = Map.fetch!(state.completed, issue_id)
     assert {:ok, _datetime, _offset} = DateTime.from_iso8601(timestamp)
   end
-
-  # NOTE(Task 8b): Linear.Client wrapper — deleted with linear/client.ex.
-  @tag :skip_until_task_8b
-  test "fetch issues by states with empty state set is a no-op", do: :ok
 
   test "prompt builder renders issue and attempt values from workflow template" do
     workflow_prompt =

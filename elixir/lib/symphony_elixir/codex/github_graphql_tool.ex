@@ -16,7 +16,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlTool do
     resolveReviewThread
   )
 
-  @spec definition() :: map()
+  @spec definition() :: %{name: String.t(), description: String.t(), parameters: map()}
   def definition do
     %{
       name: "github_graphql",

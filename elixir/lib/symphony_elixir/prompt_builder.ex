@@ -5,9 +5,8 @@ defmodule SymphonyElixir.PromptBuilder do
   Spec §12.1–12.3: prompt rendering uses Solid (Liquid) with strict variable
   and filter checking. The render context exposes:
 
-  - `issue` — the normalized `SymphonyElixir.Github.Issue` shape (pre-Task 8b
-    callers may still pass `SymphonyElixir.Linear.Issue`; both serialize via
-    `Map.from_struct/1`).
+  - `issue` — the normalized `SymphonyElixir.Github.Issue` shape, serialized
+    via `Map.from_struct/1`.
   - `attempt` — current dispatch attempt number for continuation/Rework runs.
   - `last_run_completed_at` — ISO8601 timestamp of the prior run's completion,
     sourced from `Orchestrator.State.completed[issue_id][:completed_at]`.

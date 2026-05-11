@@ -5,7 +5,7 @@
 │ Runtime: 72m 1s
 │ Tokens: in 250,000 | out 18,500 | total 268,500
 │ Rate Limits: gpt-5 | primary 12,345/20,000 reset 30s | secondary 45/60 reset 12s | credits 9876.50
-│ Project: n/a
+│ Project: https://github.com/orgs/archelab/projects/1
 │ Next refresh: n/a
 ├─ Running
 │

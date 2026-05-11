@@ -5,7 +5,7 @@
 │ Runtime: 0m 0s
 │ Tokens: in 0 | out 0 | total 0
 │ Rate Limits: unavailable
-│ Project: n/a
+│ Project: https://github.com/orgs/archelab/projects/1
 │ Next refresh: n/a
 ├─ Running
 │

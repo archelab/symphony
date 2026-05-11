@@ -14,15 +14,6 @@ defmodule SymphonyElixir.MixProject do
         ],
         ignore_modules: [
           SymphonyElixir.Config,
-          # PR2 transitional: these modules still lose coverage from
-          # :skip_until_task_8b-tagged tests (Linear adapter/client + Linear-era
-          # config-schema fixtures). PR2 Task 8b drops them when those tests
-          # are retired alongside lib/symphony_elixir/linear/.
-          SymphonyElixir.Config.Schema,
-          SymphonyElixir.Config.Schema.Server,
-          SymphonyElixir.Linear.Adapter,
-          SymphonyElixir.Linear.Client,
-          SymphonyElixir.Linear.Issue,
           SymphonyElixir.SpecsCheck,
           # Orchestrator is the GenServer top-level loop. Predicates and the
           # reconcile/stop_worker helpers are covered via direct unit tests in
@@ -116,10 +107,7 @@ defmodule SymphonyElixir.MixProject do
     [
       setup: ["deps.get", "deps.compile", "dialyzer --plt"],
       build: ["escript.build"],
-      # `mix lint` is the strict gate run on every PR. Linear-era carry-over
-      # modules may surface :underspecs warnings that Task 8 will retire when
-      # Linear is deleted; until then, run `lint.baseline` to capture the
-      # acceptable noise floor and track regressions only against that floor.
+      # `mix lint` is the strict gate run on every PR.
       lint: [
         "format --check-formatted",
         "compile --warnings-as-errors",
@@ -127,20 +115,10 @@ defmodule SymphonyElixir.MixProject do
         "credo --strict",
         "dialyzer --halt-exit-status"
       ],
-      "lint.baseline": [
-        "format --check-formatted",
-        "compile --warnings-as-errors",
-        "specs.check",
-        "credo --strict"
-      ],
       # live_github is excluded — those tests hit real GitHub and require
       # GITHUB_TOKEN; run them locally via `mix test --only live_github`.
-      # skip_until_task_8b is excluded — Linear-specific tests (Linear.Client,
-      # Linear.Adapter, status_dashboard.ex's `tracker.project_slug` read) are
-      # retired in PR2 Task 8b alongside the lib/symphony_elixir/linear/ tree.
-      # Do NOT strip these exclusions: CI has no token and the suite would fail.
       test_strict: [
-        "test --cover --warnings-as-errors --exclude skip_until_task_8b --exclude live_github"
+        "test --cover --warnings-as-errors --exclude live_github"
       ]
     ]
   end

@@ -40,15 +40,11 @@ jobs:
           path: elixir/priv/plts
           key: plts-${{ runner.os }}-${{ hashFiles('elixir/mix.lock') }}
 
-      # PR1 gate: `mix lint.baseline` (format/warnings/specs/credo).
-      # `mix lint` (with strict dialyzer) is deferred until PR2 / Task 8
-      # deletes the Linear-era carry-over modules that surface :underspecs
-      # and :unmatched_returns warnings. See PLAN.md Step 4.5 (Outcome B-defer).
-      - name: Lint baseline (format, warnings, specs, credo)
+      - name: Lint (format, warnings, specs, credo, dialyzer)
         run: |
           mix deps.get
           mix deps.compile
-          mix lint.baseline
+          mix lint
 
       - name: Test (strict, with coverage)
         run: mix test_strict

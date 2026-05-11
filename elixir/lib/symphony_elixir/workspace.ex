@@ -37,7 +37,7 @@ defmodule SymphonyElixir.Workspace do
         {:ok, workspace, false}
 
       File.exists?(workspace) ->
-        File.rm_rf!(workspace)
+        _ = File.rm_rf!(workspace)
         create_workspace(workspace)
 
       true ->
@@ -79,8 +79,8 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp create_workspace(workspace) do
-    File.rm_rf!(workspace)
-    File.mkdir_p!(workspace)
+    _ = File.rm_rf!(workspace)
+    :ok = File.mkdir_p!(workspace)
     {:ok, workspace, true}
   end
 
@@ -134,10 +134,11 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
     safe_id = safe_identifier(identifier)
 
-    case workspace_path_for_issue(safe_id, worker_host) do
-      {:ok, workspace} -> remove(workspace, worker_host)
-      {:error, _reason} -> :ok
-    end
+    _ =
+      case workspace_path_for_issue(safe_id, worker_host) do
+        {:ok, workspace} -> remove(workspace, worker_host)
+        {:error, _reason} -> :ok
+      end
 
     :ok
   end
@@ -145,16 +146,17 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier, nil) when is_binary(identifier) do
     safe_id = safe_identifier(identifier)
 
-    case Config.settings!().worker.ssh_hosts do
-      [] ->
-        case workspace_path_for_issue(safe_id, nil) do
-          {:ok, workspace} -> remove(workspace, nil)
-          {:error, _reason} -> :ok
-        end
+    _ =
+      case Config.settings!().worker.ssh_hosts do
+        [] ->
+          case workspace_path_for_issue(safe_id, nil) do
+            {:ok, workspace} -> remove(workspace, nil)
+            {:error, _reason} -> :ok
+          end
 
-      worker_hosts ->
-        Enum.each(worker_hosts, &remove_issue_workspaces(identifier, &1))
-    end
+        worker_hosts ->
+          Enum.each(worker_hosts, &remove_issue_workspaces(identifier, &1))
+      end
 
     :ok
   end
@@ -317,7 +319,7 @@ defmodule SymphonyElixir.Workspace do
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
       nil ->
-        Task.shutdown(task, :brutal_kill)
+        _ = Task.shutdown(task, :brutal_kill)
 
         Logger.warning("Workspace hook timed out hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local timeout_ms=#{timeout_ms}")
 
@@ -455,7 +457,7 @@ defmodule SymphonyElixir.Workspace do
         result
 
       nil ->
-        Task.shutdown(task, :brutal_kill)
+        _ = Task.shutdown(task, :brutal_kill)
         {:error, {:workspace_hook_timeout, "remote_command", timeout_ms}}
     end
   end

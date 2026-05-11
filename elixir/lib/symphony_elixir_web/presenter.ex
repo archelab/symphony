@@ -5,7 +5,17 @@ defmodule SymphonyElixirWeb.Presenter do
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, Workspace}
 
-  @spec state_payload(GenServer.name(), timeout()) :: map()
+  @type state_payload :: %{
+          required(:generated_at) => binary(),
+          optional(:counts) => %{running: non_neg_integer(), retrying: non_neg_integer()},
+          optional(:running) => [map()],
+          optional(:retrying) => [map()],
+          optional(:codex_totals) => term(),
+          optional(:rate_limits) => term(),
+          optional(:error) => %{code: binary(), message: binary()}
+        }
+
+  @spec state_payload(atom(), timeout()) :: state_payload()
   def state_payload(orchestrator, snapshot_timeout_ms) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
@@ -31,7 +41,22 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
+  @type issue_body :: %{
+          :attempts => map(),
+          :issue_id => term(),
+          :issue_identifier => binary(),
+          :last_error => term(),
+          :logs => map(),
+          :recent_events => false | nil | [map()],
+          :retry => false | nil | map(),
+          :running => false | nil | map(),
+          :status => binary(),
+          :tracked => map(),
+          :workspace => map()
+        }
+
+  @spec issue_payload(String.t(), atom(), timeout()) ::
+          {:ok, issue_body()} | {:error, :issue_not_found}
   def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->

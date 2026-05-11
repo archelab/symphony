@@ -962,7 +962,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute rendered =~ "Timestamp:"
   end
 
-  test "status dashboard renders project placeholder in header (Task 8b restores GitHub URL)" do
+  test "status dashboard renders GitHub Projects v2 URL in header" do
     snapshot_data =
       {:ok,
        %{
@@ -974,11 +974,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
 
-    # PR2 transitional: `tracker.project_slug` is gone; Task 8b will rebuild
-    # this with a GitHub Projects v2 URL.
+    # The test workflow defaults to owner=archelab, owner_type=organization,
+    # project_number=1 — see test/support/test_support.exs.
     assert rendered =~ "Project:"
-    assert rendered =~ "n/a"
-    refute rendered =~ "https://linear.app"
+    assert rendered =~ "https://github.com/orgs/archelab/projects/1"
     refute rendered =~ "Dashboard:"
   end
 
@@ -1007,7 +1006,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
 
     assert rendered =~ "│ Project:"
-    refute rendered =~ "https://linear.app"
+    assert rendered =~ "https://github.com/orgs/archelab/projects/1"
     assert rendered =~ "│ Dashboard:"
     assert rendered =~ "http://127.0.0.1:4000/"
   end
@@ -1384,7 +1383,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       {"item/fileChange/outputDelta", %{"params" => %{"outputDelta" => "changed"}}, "file change output streaming"},
       {"item/commandExecution/requestApproval", %{"params" => %{"parsedCmd" => "git status"}}, "command approval requested (git status)"},
       {"item/fileChange/requestApproval", %{"params" => %{"fileChangeCount" => 2}}, "file change approval requested (2 files)"},
-      {"item/tool/call", %{"params" => %{"tool" => "linear_graphql"}}, "dynamic tool call requested (linear_graphql)"},
+      {"item/tool/call", %{"params" => %{"tool" => "github_graphql"}}, "dynamic tool call requested (github_graphql)"},
       {"item/tool/requestUserInput", %{"params" => %{"question" => "Continue?"}}, "tool requires user input: Continue?"}
     ]
 
@@ -1402,14 +1401,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     completed = %{
       event: :tool_call_completed,
       message: %{
-        payload: %{"method" => "item/tool/call", "params" => %{"name" => "linear_graphql"}}
+        payload: %{"method" => "item/tool/call", "params" => %{"name" => "github_graphql"}}
       }
     }
 
     failed = %{
       event: :tool_call_failed,
       message: %{
-        payload: %{"method" => "item/tool/call", "params" => %{"tool" => "linear_graphql"}}
+        payload: %{"method" => "item/tool/call", "params" => %{"tool" => "github_graphql"}}
       }
     }
 
@@ -1421,10 +1420,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     assert StatusDashboard.humanize_codex_message(completed) =~
-             "dynamic tool call completed (linear_graphql)"
+             "dynamic tool call completed (github_graphql)"
 
     assert StatusDashboard.humanize_codex_message(failed) =~
-             "dynamic tool call failed (linear_graphql)"
+             "dynamic tool call failed (github_graphql)"
 
     assert StatusDashboard.humanize_codex_message(unsupported) =~
              "unsupported dynamic tool call rejected (unknown_tool)"
@@ -1502,7 +1501,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         "method" => "codex/event/agent_reasoning",
         "params" => %{
           "msg" => %{
-            "payload" => %{"summaryText" => "compare retry paths for Linear polling"}
+            "payload" => %{"summaryText" => "compare retry paths for tracker polling"}
           }
         }
       }
@@ -1529,7 +1528,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     assert StatusDashboard.humanize_codex_message(reasoning_message) =~
-             "reasoning update: compare retry paths for Linear polling"
+             "reasoning update: compare retry paths for tracker polling"
 
     assert StatusDashboard.humanize_codex_message(message_delta) =~
              "agent message streaming: writing workpad reconciliation update"

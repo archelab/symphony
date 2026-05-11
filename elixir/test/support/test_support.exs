@@ -12,7 +12,6 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Config
       alias SymphonyElixir.Github.Issue
       alias SymphonyElixir.HttpServer
-      alias SymphonyElixir.Linear.Client
       alias SymphonyElixir.Orchestrator
       alias SymphonyElixir.PromptBuilder
       alias SymphonyElixir.StatusDashboard
