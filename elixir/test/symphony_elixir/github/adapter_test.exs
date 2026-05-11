@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
   # Do NOT flip to async without removing the shared Application env state.
   @moduletag :async_unsafe
 
-  alias SymphonyElixir.Github.{Adapter, RateLimitGate}
+  alias SymphonyElixir.Github.{Adapter, Normalize, RateLimitGate}
 
   defmodule FakeClient do
     @moduledoc false
@@ -377,6 +377,58 @@ defmodule SymphonyElixir.Github.AdapterTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
 
     assert {:error, {:github_api_request, :timeout}} = Adapter.fetch_issue_states_by_ids(["x"])
+  end
+
+  # SPEC invariant: a project item has ONE stable identifier across the
+  # dispatch path (Normalize.item/2) and the refresh path
+  # (Adapter.fetch_issue_states_by_ids/1). Regression guard for the bug where
+  # `identifier_from_refresh/1` sliced `content.id` (the DraftIssue node id)
+  # while `Normalize.identifier_for/4` sliced the outer project-item id,
+  # producing two different identifiers for the same draft.
+  test "draft_issue identifier is identical on dispatch and refresh paths" do
+    item_id = "PVTI_lADODDTPxM4BXSCKzgsX7CM"
+    content_node_id = "DI_zzz_different_node"
+
+    dispatch_node = %{
+      "id" => item_id,
+      "type" => "DRAFT_ISSUE",
+      "isArchived" => false,
+      "fieldValueByName" => %{"name" => "Agent Ready"},
+      "content" => %{
+        "__typename" => "DraftIssue",
+        "id" => content_node_id,
+        "title" => "smoke",
+        "body" => "",
+        "createdAt" => "2026-05-11T00:00:00Z",
+        "updatedAt" => "2026-05-11T00:00:00Z"
+      }
+    }
+
+    {:ok, dispatch_issue} = Normalize.item(dispatch_node, status_field: "Status")
+    expected = "draft:" <> String.slice(item_id, -8, 8)
+    assert dispatch_issue.identifier == expected
+
+    refresh_payload = %{
+      "data" => %{
+        "rateLimit" => %{"remaining" => 4_000, "resetAt" => "2026-05-11T13:00:00Z"},
+        "nodes" => [
+          %{
+            "__typename" => "ProjectV2Item",
+            "id" => item_id,
+            "type" => "DRAFT_ISSUE",
+            "isArchived" => false,
+            "fieldValueByName" => %{"name" => "Agent Ready"},
+            "content" => %{"__typename" => "DraftIssue", "id" => content_node_id}
+          }
+        ]
+      }
+    }
+
+    Application.put_env(:symphony_elixir, :github_client, fn _, _, _ -> {:ok, refresh_payload} end)
+
+    assert {:ok, [%{identifier: refresh_identifier}]} = Adapter.fetch_issue_states_by_ids([item_id])
+    assert refresh_identifier == expected
+    assert refresh_identifier == dispatch_issue.identifier
   end
 
   test "paginate_items handles multi-page responses" do

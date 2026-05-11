@@ -146,8 +146,16 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
-      {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if active_issue_state?(refreshed_issue.state) do
+      {:ok, [first | _]} ->
+        # Accept both Memory's %Issue{} shape and the Github adapter's
+        # refresh-result map shape (Tracker.refresh_result). We only need the
+        # current Status field value for the continuation decision, but we
+        # splice it back onto the ORIGINAL Issue struct so the next prompt
+        # render and downstream callers see the latest state on a full Issue.
+        refreshed_state = refresh_state(first)
+        refreshed_issue = %Issue{issue | state: refreshed_state}
+
+        if active_issue_state?(refreshed_state) do
           {:continue, refreshed_issue}
         else
           {:done, refreshed_issue}
@@ -162,6 +170,9 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+
+  defp refresh_state(%Issue{state: state}), do: state
+  defp refresh_state(%{state: state}) when is_binary(state), do: state
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)
