@@ -161,6 +161,15 @@ defmodule SymphonyElixir.TestSupport do
           agent_workpad_version: nil,
           agent_workpad_max_sessions_visible: nil,
           agent_workpad_update_throttle_turns: nil,
+          # SPEC §11.8.10 (PR4 addition): same opt-out reasoning as
+          # `agent_workpad_enabled` above — the session-summary protocol
+          # defaults to enabled at the schema level and forces SPEC §11.8.10
+          # cross-validation (`codex.model` required, template MUST reference
+          # at least one of `thread_id`, `subject_id`, `dispatched_at`). The
+          # vast majority of pre-PR4 tests are orthogonal to summary
+          # comments; they opt out by default.
+          agent_session_summary_enabled: false,
+          agent_session_summary_version: nil,
           codex_command: "codex app-server",
           codex_model: nil,
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
@@ -225,6 +234,8 @@ defmodule SymphonyElixir.TestSupport do
     agent_workpad_version = Keyword.get(config, :agent_workpad_version)
     agent_workpad_max_sessions_visible = Keyword.get(config, :agent_workpad_max_sessions_visible)
     agent_workpad_update_throttle_turns = Keyword.get(config, :agent_workpad_update_throttle_turns)
+    agent_session_summary_enabled = Keyword.get(config, :agent_session_summary_enabled)
+    agent_session_summary_version = Keyword.get(config, :agent_session_summary_version)
     codex_command = Keyword.get(config, :codex_command)
     codex_model = Keyword.get(config, :codex_model)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
@@ -280,6 +291,7 @@ defmodule SymphonyElixir.TestSupport do
           agent_workpad_max_sessions_visible,
           agent_workpad_update_throttle_turns
         ),
+        session_summary_yaml(agent_session_summary_enabled, agent_session_summary_version),
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         optional_yaml("  model", codex_model),
@@ -386,6 +398,18 @@ defmodule SymphonyElixir.TestSupport do
       optional_yaml("    version", version),
       optional_yaml("    max_sessions_visible", max_sessions_visible),
       optional_yaml("    update_throttle_turns", update_throttle_turns)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp session_summary_yaml(nil, nil), do: nil
+
+  defp session_summary_yaml(enabled, version) do
+    [
+      "  session_summary:",
+      optional_yaml("    enabled", enabled),
+      optional_yaml("    version", version)
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")

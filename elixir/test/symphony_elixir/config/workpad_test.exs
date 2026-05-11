@@ -3,6 +3,10 @@ defmodule SymphonyElixir.Config.WorkpadTest do
 
   alias SymphonyElixir.Config.Schema
 
+  # SPEC §11.8.10 PR4: `agent.session_summary.enabled` ALSO defaults to true
+  # and forces its own `codex.model` cross-validation. These tests focus on
+  # the workpad block — opt out of session-summary so the assertions stay
+  # narrow. Tests in `Config.SessionSummaryTest` cover the summary side.
   defp parse(attrs) do
     base = %{
       "tracker" => %{
@@ -14,7 +18,13 @@ defmodule SymphonyElixir.Config.WorkpadTest do
       }
     }
 
-    Schema.parse(Map.merge(base, attrs))
+    merged = Map.merge(base, attrs)
+    agent = Map.get(merged, "agent", %{})
+
+    summary_opt_out =
+      Map.merge(%{"enabled" => false}, Map.get(agent, "session_summary", %{}))
+
+    Schema.parse(Map.put(merged, "agent", Map.put(agent, "session_summary", summary_opt_out)))
   end
 
   test "agent.workpad defaults to enabled (SPEC §11.8.9 PR4 amendment)" do

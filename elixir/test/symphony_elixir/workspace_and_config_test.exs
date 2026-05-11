@@ -514,9 +514,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "config supports per-state max concurrent agent overrides" do
-    # SPEC §11.8.9 PR4 amendment: workpad defaults to enabled which forces
-    # `codex.model` (SPEC §11.8.5). This test asserts per-state overrides
-    # and is orthogonal to workpad; opt out explicitly.
+    # SPEC §11.8.9 + §11.8.10 PR4 amendment: both workpad AND session-summary
+    # default to enabled, each forcing `codex.model` cross-validation. This
+    # test asserts per-state overrides and is orthogonal to both — opt out
+    # of both explicitly.
     workflow = """
     ---
     agent:
@@ -526,6 +527,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         "In Progress": 4
         "In Review": 2
       workpad:
+        enabled: false
+      session_summary:
         enabled: false
     ---
     """
@@ -615,13 +618,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "schema keeps workspace roots raw while sandbox helpers expand only for local use" do
-    # SPEC §11.8.9 PR4 amendment: opt out of workpad to keep this
-    # workspace-focused test orthogonal to the workpad cross-validation.
+    # SPEC §11.8.9 + §11.8.10 PR4 amendment: opt out of workpad AND
+    # session-summary to keep this workspace-focused test orthogonal to
+    # both cross-validations.
     assert {:ok, settings} =
              Schema.parse(%{
                workspace: %{root: "~/.symphony-workspaces"},
                codex: %{},
-               agent: %{workpad: %{enabled: false}}
+               agent: %{workpad: %{enabled: false}, session_summary: %{enabled: false}}
              })
 
     assert settings.workspace.root == "~/.symphony-workspaces"

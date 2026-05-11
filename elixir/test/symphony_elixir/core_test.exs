@@ -61,15 +61,26 @@ defmodule SymphonyElixir.CoreTest do
                _vars}} = Workflow.load(workflow_path)
   end
 
-  test "workflow load accepts prompt-only files when workpad is explicitly disabled (SPEC §11.8.9 opt-out)" do
-    # The operator-facing migration path from the PR4 amendment: setting
-    # `agent.workpad.enabled: false` preserves pre-PR4 prompt-only loading.
+  test "workflow load accepts prompt-only files when workpad + session_summary are explicitly disabled (SPEC §11.8.9 + 11.8.10 opt-out)" do
+    # The operator-facing migration path from the PR4 amendment: both
+    # workpad (SPEC §11.8.9) and session-summary (SPEC §11.8.10) default to
+    # enabled. To preserve pre-PR4 prompt-only loading, both must be
+    # explicitly disabled.
     workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "PROMPT_ONLY_OPTED_OUT.md")
-    File.write!(workflow_path, "---\nagent:\n  workpad:\n    enabled: false\n---\nPrompt only\n")
+
+    File.write!(
+      workflow_path,
+      "---\nagent:\n  workpad:\n    enabled: false\n  session_summary:\n    enabled: false\n---\nPrompt only\n"
+    )
 
     assert {:ok,
             %{
-              config: %{"agent" => %{"workpad" => %{"enabled" => false}}},
+              config: %{
+                "agent" => %{
+                  "workpad" => %{"enabled" => false},
+                  "session_summary" => %{"enabled" => false}
+                }
+              },
               prompt: "Prompt only",
               prompt_template: "Prompt only"
             }} = Workflow.load(workflow_path)

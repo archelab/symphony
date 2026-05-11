@@ -177,6 +177,34 @@ primary-quota exhaustion (`rateLimit.resetAt`), wait for reset before the next a
 The orchestrator's §13.1 structured logs remain the authoritative session record while
 the workpad is unwritable.
 
+## Per-session summary (SPEC §11.8.10)
+
+On your FINAL turn before voluntary completion (AFTER updating the workpad sessions
+table), post a NEW comment via `github_graphql.addComment(input: {subjectId:
+"{{ subject_id }}", body: $body})` with this exact shape:
+
+```
+<!-- symphony-session-summary:{{ thread_id }}:v1 -->
+Session: {{ thread_id }}
+Attempt: {{ attempt }}
+Dispatched: {{ dispatched_at }}
+Completed: <fill in with wall-clock UTC at final-turn time>
+Duration: <H>h<M>m<S>s
+Model: {{ model }}
+Stop reason: agent_exit_normal
+
+<Freeform summary: 3–10 sentences. Goal, plan, key actions taken, code references,
+open questions. Bullet points and links to PRs/commits are encouraged.>
+<!-- /symphony-session-summary:{{ thread_id }}:v1 -->
+```
+
+The marker embeds `{{ thread_id }}` so each session has a uniquely-addressable audit
+comment that future operators can grep without joining against orchestrator logs.
+
+**Append-only.** Do NOT edit or delete any prior session-summary comment. The §11.8.10
+audit trail is the permanent record of every dispatch; corrections go in a NEW summary
+comment on the next session, not by overwriting an old one.
+
 ## Stopping conditions
 
 This is an unattended orchestration session. Stop early only for:
