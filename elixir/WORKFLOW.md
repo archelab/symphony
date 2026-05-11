@@ -41,8 +41,11 @@ You are working on GitHub item `{{ issue.identifier }}` in project Symphony.
 ## Continuation context
 
 This is dispatch attempt #{{ attempt }}.{% if last_run_completed_at %} Prior session ended at {{ last_run_completed_at }}.{% endif %}
-Resume from the existing workspace state. Do not redo investigation
-unnecessarily. Read the latest tracker feedback before changing code.
+
+BEFORE touching code:
+1. `gh issue view {{ issue.number }} --repo {{ issue.repository.name_with_owner }} --comments` and read every comment posted after {{ last_run_completed_at }}.
+2. {% if issue.kind == "pull_request" %}`gh pr view {{ issue.number }} --repo {{ issue.repository.name_with_owner }} --json reviews,reviewThreads` and resolve every unresolved thread.{% endif %}
+3. Summarize the requested changes in your workpad comment before editing.
 {% endif %}
 
 ## Item context
