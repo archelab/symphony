@@ -176,6 +176,27 @@ codex:
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 
+## Agent Workpad Protocol (SPEC §11.8)
+
+Optional cross-session memory for the coding agent. Disabled by default — opt in by copying
+`WORKFLOW.workpad.example.md` over your `WORKFLOW.md` and setting `agent.workpad.enabled: true`
+plus an explicit `codex.model` (so the sessions table records a stable model identifier rather
+than whatever `codex.command` resolves to).
+
+When enabled and the dispatched item is an Issue or PullRequest, the orchestrator extends the
+prompt context with five additional Liquid variables — `thread_id`, `dispatched_at`, `model`,
+`subject_id`, and `prior_sessions` — alongside the existing `issue`, `attempt`, and
+`last_run_completed_at`. The agent uses the `github_graphql` tool to find-or-create a single
+comment on the underlying Issue/PullRequest, identified by the HTML marker
+`<!-- symphony-workpad:v1 -->`, and records one row per dispatch in a Markdown sessions table.
+See SPEC §11.8 for the full protocol.
+
+The orchestrator never writes to the workpad directly (SPEC §11.5 boundary): all mutations
+flow through the agent's `addComment` / `updateIssueComment` calls, gated by the allowlist in
+`Codex.GithubGraphqlTool`. When `agent.workpad.enabled` is `false` (the default), none of the
+five workpad variables are emitted, so the stock `WORKFLOW.md` shipped with this repo renders
+under Solid strict mode without referencing them.
+
 ## Web dashboard
 
 The observability UI now runs on a minimal Phoenix stack:
