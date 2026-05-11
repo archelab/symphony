@@ -1097,6 +1097,122 @@ defmodule SymphonyElixir.CoreTest do
     assert [%{thread_id: "thr-new"} | _] = records
   end
 
+  test "abnormal worker exit (:agent_exit_crashed) records a session record (SPEC §11.8.3)" do
+    issue_id = "issue-completed-crashed"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :CrashedExitOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+    dispatched_at = DateTime.to_iso8601(started_at)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "archelab/symphony#900",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "archelab/symphony#900",
+        kind: "issue",
+        state: "In Progress",
+        issue_state: "OPEN"
+      },
+      started_at: started_at,
+      dispatched_at: dispatched_at,
+      thread_id: "thr-crash",
+      model: "gpt-5.5",
+      retry_attempt: 2
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    # Non-:normal exit reasons map to :agent_exit_crashed per §13.1 vocabulary.
+    send(pid, {:DOWN, ref, :process, self(), {:badarg, []}})
+    Process.sleep(50)
+
+    state = :sys.get_state(pid)
+
+    assert [
+             %{
+               thread_id: "thr-crash",
+               attempt: 2,
+               stop_reason: :agent_exit_crashed,
+               model: "gpt-5.5"
+             }
+             | _
+           ] = Map.fetch!(state.completed, issue_id)
+  end
+
+  test ":stall_restart records a session record (SPEC §11.8.3 — recover via prior_sessions[0])" do
+    issue_id = "PVTI_stall_restart_completed"
+    orchestrator_name = Module.concat(__MODULE__, :StallRestartOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    # Drive the stall detector: last_codex_timestamp older than stall_timeout_ms.
+    stall_timeout_ms = Config.settings!().codex.stall_timeout_ms
+    started_at = DateTime.add(DateTime.utc_now(), -(stall_timeout_ms + 60_000), :millisecond)
+
+    fake_pid = spawn(fn -> Process.sleep(:infinity) end)
+    fake_ref = Process.monitor(fake_pid)
+
+    running_entry = %{
+      pid: fake_pid,
+      ref: fake_ref,
+      issue_id: issue_id,
+      issue_identifier: "archelab/symphony#901",
+      identifier: "archelab/symphony#901",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "archelab/symphony#901",
+        kind: "issue",
+        state: "In Progress",
+        issue_state: "OPEN"
+      },
+      worker_host: nil,
+      workspace_path: nil,
+      session_id: nil,
+      blocked_by_snapshot: [],
+      started_at: started_at,
+      dispatched_at: DateTime.to_iso8601(started_at),
+      thread_id: "thr-stall",
+      model: nil,
+      retry_attempt: 3,
+      last_codex_timestamp: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+    end)
+
+    state_before = :sys.get_state(pid)
+    state_after = Orchestrator.apply_reconcile_stalled_runs_for_test(state_before)
+
+    assert [%{stop_reason: :stall_restart, thread_id: "thr-stall", attempt: 3} | _] =
+             Map.fetch!(state_after.completed, issue_id)
+  end
+
   test "stop_reason carries reconcile-driven tokens (SPEC §11.8.5)" do
     issue_id = "PVTI_reconcile_completed"
     orchestrator_name = Module.concat(__MODULE__, :ReconcileStopReasonOrchestrator)

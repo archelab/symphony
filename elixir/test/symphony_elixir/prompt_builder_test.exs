@@ -114,7 +114,7 @@ defmodule SymphonyElixir.PromptBuilderTest do
       assert rendered =~ "prior_stop=agent_exit_normal"
     end
 
-    test "enabled + pull_request kind: subject_id surfaces PR content id" do
+    test "enabled + pull_request kind: all 5 workpad vars present and non-empty (SPEC §17.8)" do
       enable_workpad!()
 
       issue =
@@ -124,17 +124,38 @@ defmodule SymphonyElixir.PromptBuilderTest do
           pr: %{state: "OPEN", merged: false, is_draft: false, base_ref_name: "main"}
         )
 
-      template = "{{ subject_id }}"
+      prior = [
+        %{
+          thread_id: "thr-prior",
+          attempt: 1,
+          dispatched_at: "2026-05-10T20:00:00Z",
+          completed_at: "2026-05-10T20:30:00Z",
+          duration_ms: 1_800_000,
+          model: "gpt-5.5",
+          stop_reason: :agent_exit_normal
+        }
+      ]
 
-      assert {:ok, "PR_xyz"} =
+      template =
+        "tid={{ thread_id }} sid={{ subject_id }} m={{ model }} d={{ dispatched_at }} " <>
+          "n={{ prior_sessions.size }} pt={{ prior_sessions[0].thread_id }}"
+
+      assert {:ok, rendered} =
                PromptBuilder.render(template,
                  issue: issue,
-                 attempt: 1,
+                 attempt: 2,
                  thread_id: "thr-1",
                  dispatched_at: "2026-05-11T20:00:00Z",
                  model: "gpt-5.5",
-                 prior_sessions: []
+                 prior_sessions: prior
                )
+
+      assert rendered =~ "tid=thr-1"
+      assert rendered =~ "sid=PR_xyz"
+      assert rendered =~ "m=gpt-5.5"
+      assert rendered =~ "d=2026-05-11T20:00:00Z"
+      assert rendered =~ "n=1"
+      assert rendered =~ "pt=thr-prior"
     end
 
     test "enabled + draft_issue kind: workpad vars absent, strict rejects template" do

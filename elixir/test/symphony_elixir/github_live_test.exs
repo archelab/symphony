@@ -106,6 +106,23 @@ defmodule SymphonyElixir.GithubLiveTest do
     # the agent-side surface: addComment and updateIssueComment through the
     # `github_graphql` Codex tool. Finally verifies deleteIssueComment is
     # rejected — workpad is append-only by spec.
+
+    # SPEC §11.8.4 + §17.8: updateIssueComment is gated by
+    # `agent.workpad.enabled`. Toggle it on for this test only.
+    token = System.get_env("GITHUB_TOKEN")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: token,
+      tracker_owner: "archelab",
+      tracker_owner_type: "organization",
+      tracker_project_number: 1,
+      tracker_repo: "symphony",
+      tracker_active_states: ["Agent Ready", "In Progress", "Rework"],
+      tracker_terminal_states: ["Done"],
+      agent_workpad_enabled: true
+    )
+
     title = "[workpad-live-test] addComment + updateIssueComment round-trip #{System.unique_integer([:positive])}"
     body = "Throwaway live test for SPEC §11.8.4 — safe to close/delete."
 

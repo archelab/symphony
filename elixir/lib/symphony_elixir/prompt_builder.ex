@@ -79,7 +79,16 @@ defmodule SymphonyElixir.PromptBuilder do
     end
   end
 
-  defp workpad_active?(%Issue{kind: kind}) when kind in ["issue", "pull_request"] do
+  # SPEC §11.8.5 + §17.8: the five variables MUST be present AND non-empty
+  # when workpad activates. We treat a missing/blank `content_id` as a hard
+  # block — emitting `subject_id: nil` would render as empty in Liquid and
+  # then the agent's `addComment(subjectId: "")` would fail with a GraphQL
+  # type error far from the root cause. Better to fall back to the
+  # workpad-disabled context shape, which Solid strict mode will reject if
+  # the workflow template references workpad variables — making the data
+  # integrity bug operator-visible at prompt-render time.
+  defp workpad_active?(%Issue{kind: kind, content_id: content_id})
+       when kind in ["issue", "pull_request"] and is_binary(content_id) and content_id != "" do
     Config.settings!().agent.workpad.enabled == true
   end
 

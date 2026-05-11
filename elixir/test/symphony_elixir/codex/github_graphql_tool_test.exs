@@ -46,7 +46,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
              })
   end
 
-  test "allows updateIssueComment for workpad append-only edits (SPEC §11.8.4)" do
+  test "allows updateIssueComment when agent.workpad.enabled (SPEC §11.8.4 / §17.8)" do
     fake =
       fn query, _v, _opts ->
         assert query =~ "updateIssueComment"
@@ -56,11 +56,24 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_workflow_file!(Workflow.workflow_file_path(), agent_workpad_enabled: true)
 
     assert {:ok, %{"data" => %{"updateIssueComment" => _}}} =
              GithubGraphqlTool.handle(%{
                "query" => "mutation { updateIssueComment(input:{id:\"c1\", body:\"corrected\"}) { issueComment { id } } }",
+               "variables" => %{}
+             })
+  end
+
+  test "rejects updateIssueComment when agent.workpad is disabled (SPEC §17.8)" do
+    # No `fake` stub installed — if the mutation slipped past the allowlist
+    # we'd hit the real Client.graphql/3 and fail differently. The expected
+    # path returns the allowlist rejection BEFORE the transport call.
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:error, {:mutation_not_allowed, "updateIssueComment"}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { updateIssueComment(input:{id:\"c1\", body:\"x\"}) { issueComment { id } } }",
                "variables" => %{}
              })
   end

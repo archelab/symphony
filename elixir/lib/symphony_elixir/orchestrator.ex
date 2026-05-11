@@ -224,12 +224,16 @@ defmodule SymphonyElixir.Orchestrator do
         # directly to avoid the double-cleanup risk.
         log_worker_stop(running_entry, stop_reason)
 
+        # SPEC §11.8.3 + §11.8.5: record EVERY session — normal AND abnormal —
+        # so the next dispatched session can patch the prior row's Ended /
+        # Duration / Stop reason via `prior_sessions[0]`. Crashes that go
+        # unrecorded would leave a permanent "—" row in the workpad table.
+        state = complete_issue(state, issue_id, running_entry, stop_reason)
+
         state =
           case reason do
             :normal ->
-              state
-              |> complete_issue(issue_id, running_entry, stop_reason)
-              |> schedule_issue_retry(issue_id, 1, %{
+              schedule_issue_retry(state, issue_id, 1, %{
                 identifier: running_entry.identifier,
                 delay_type: :continuation,
                 worker_host: Map.get(running_entry, :worker_host),
@@ -455,6 +459,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  # Test seam for the stall-detection path. Drives the same code path the
+  # poll tick uses so a refactor cannot drift `reconcile_stalled_running_issues`
+  # silently — and exercises §11.8.3's "record every session" requirement for
+  # :stall_restart.
+  @spec apply_reconcile_stalled_runs_for_test(State.t()) :: State.t()
+  def apply_reconcile_stalled_runs_for_test(%State{} = state) do
+    reconcile_stalled_running_issues(state)
+  end
+
+  @doc false
   @spec sort_issues_for_dispatch_for_test([term()]) :: [term()]
   def sort_issues_for_dispatch_for_test(issues) when is_list(issues) do
     sort_issues_for_dispatch(issues)
@@ -499,16 +513,12 @@ defmodule SymphonyElixir.Orchestrator do
           Process.demonitor(ref, [:flush])
         end
 
-        # SPEC §11.8.5: capture this terminated session into the workpad history
-        # before the running entry is dropped. `stall_restart` is intentionally
-        # excluded — a stall restart re-dispatches the same logical attempt, so
-        # recording it as a completed session would double-count the run.
-        state =
-          if reason == :stall_restart do
-            state
-          else
-            complete_issue(state, issue_id, running_entry, reason)
-          end
+        # SPEC §11.8.3 + §11.8.5: capture EVERY terminated session — including
+        # stall_restart — into the workpad history before the running entry is
+        # dropped. Stall restart re-dispatches under a NEW Codex thread id,
+        # producing a distinct workpad row keyed by thread (not attempt), so
+        # recording it does not double-count the run.
+        state = complete_issue(state, issue_id, running_entry, reason)
 
         %{
           state
@@ -1083,11 +1093,11 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  # Snapshot the codex model setting at dispatch time. Task 2 will add this
-  # field to the Config schema; until then `Map.get/3` returns nil safely.
-  defp codex_model_snapshot do
-    Map.get(Config.settings!().codex, :model)
-  end
+  # Snapshot the codex model setting at dispatch time. `codex.model` is
+  # OPTIONAL (SPEC §11.8.5); operators SHOULD set it explicitly when running
+  # under §11.8 so the workpad sessions table records the same identifier
+  # the agent self-reports. Returns nil when unset.
+  defp codex_model_snapshot, do: Config.settings!().codex.model
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
        when is_binary(issue_id) and is_map(metadata) do

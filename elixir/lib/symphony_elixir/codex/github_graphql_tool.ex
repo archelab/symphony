@@ -22,9 +22,13 @@ defmodule SymphonyElixir.Codex.GithubGraphqlTool do
   """
   @type graphql_error :: SymphonyElixir.Github.Client.graphql_error()
 
+  # SPEC §11.8.4 + §17.8: `updateIssueComment` is intentionally NOT in the
+  # default allowlist. `mutation_allowlist/0` appends it only when
+  # `agent.workpad.enabled: true` so workflows that opt into §11.8 get the
+  # capability while workflows that do not are protected from a hallucinating
+  # agent rewriting unrelated issue comments.
   @default_mutation_allowlist ~w(
     addComment
-    updateIssueComment
     updateProjectV2ItemFieldValue
     addLabelsToLabelable
     removeLabelsFromLabelable
@@ -32,6 +36,10 @@ defmodule SymphonyElixir.Codex.GithubGraphqlTool do
     addPullRequestReview
     resolveReviewThread
   )
+
+  # Mutations conditionally added when the Agent Workpad Protocol is enabled.
+  # Centralized here so future workpad-protocol additions land in one place.
+  @workpad_mutation_allowlist ~w(updateIssueComment)
 
   @spec definition() :: %{name: String.t(), description: String.t(), parameters: map()}
   def definition do
@@ -252,10 +260,23 @@ defmodule SymphonyElixir.Codex.GithubGraphqlTool do
   end
 
   defp mutation_allowlist do
-    Application.get_env(
-      :symphony_elixir,
-      :github_graphql_mutation_allowlist,
-      @default_mutation_allowlist
-    )
+    base =
+      Application.get_env(
+        :symphony_elixir,
+        :github_graphql_mutation_allowlist,
+        @default_mutation_allowlist
+      )
+
+    Enum.uniq(base ++ workpad_mutation_extras())
+  end
+
+  # SPEC §11.8.4 / §17.8: emit the workpad-gated mutations only when the
+  # workpad is enabled in current effective config. Falls back to `[]` if the
+  # workpad config block is absent (older workflows pre-§11.8.9).
+  defp workpad_mutation_extras do
+    case Config.settings!() do
+      %{agent: %{workpad: %{enabled: true}}} -> @workpad_mutation_allowlist
+      _ -> []
+    end
   end
 end
