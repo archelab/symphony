@@ -214,6 +214,12 @@ fi
 echo "first_thread_id (orchestrator-authoritative)=$FIRST_THREAD_ID"
 
 # Flip Status → Done to drive terminal reconcile (clean break before Rework).
+# Note: archelab/symphony Project #1 has an "Auto-close issue" workflow
+# enabled, so setting Status=Done closes the underlying Issue. Flipping
+# Status back to Rework alone leaves the Issue CLOSED, and the orchestrator
+# correctly refuses to dispatch CLOSED issues (SPEC §11.2.1 terminal-OR
+# + §8.2: dispatch requires issue_state == "OPEN"). Reopening the Issue
+# alongside the Status flip is required to re-trigger dispatch.
 e2e::set_status "$ITEM_ID" "Done"
 sleep 6
 
@@ -222,7 +228,9 @@ sleep 6
 # Rework re-dispatch.
 REWORK_CUTOFF_EPOCH=$(date +%s)
 
-# Flip Status → Rework to trigger a second dispatch.
+# Reopen the issue (Project auto-close closed it on Done flip) and flip
+# Status → Rework to trigger a second dispatch.
+gh issue reopen "$ISSUE_NUM" -R "$SYMPHONY_E2E_PROJECT_OWNER/$SYMPHONY_E2E_REPO" >/dev/null
 e2e::set_status "$ITEM_ID" "Rework"
 echo "flipped to Rework — waiting for second dispatch"
 
@@ -302,6 +310,20 @@ if [[ -z "$SECOND_ROLL" ]]; then
   e2e::verdict_partial "second rollout JSONL not found for thread_id=$SECOND_THREAD_ID under \$HOME/.codex/sessions. Orchestrator dispatched but Codex rollout absent — likely codex CLI not writing rollouts in this env."
 fi
 echo "second rollout: $SECOND_ROLL"
+
+# Codex writes the user prompt to the rollout ~5s AFTER session start
+# (see first rollout: task_started at t=0, user message at t=5s). When we
+# detected the rollout via Channel 2 above, it may contain only
+# `task_started` and a stub message — wait until the user prompt is
+# actually flushed before asserting on its content. Budget: 30s.
+prompt_wait=0
+while (( prompt_wait < 30 )); do
+  if grep -aq "## Item context" "$SECOND_ROLL"; then
+    break
+  fi
+  sleep 2
+  (( prompt_wait+=2 ))
+done
 
 # The second dispatch's prompt MUST contain the first session's thread_id
 # rendered under `Prior sessions` — see WORKFLOW.workpad.example.md:164:
