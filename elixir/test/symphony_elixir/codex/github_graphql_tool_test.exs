@@ -172,4 +172,95 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
                "variables" => %{}
              })
   end
+
+  test "top-level directives on allowlisted mutations are skipped (not gated as fields)" do
+    fake = fn query, _v, _opts ->
+      assert query =~ "addComment"
+      {:ok, %{"data" => %{"addComment" => %{}}}}
+    end
+
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { addComment(input: {subjectId: \"x\", body: \"hi\"}) @log(level: \"info\") { clientMutationId } }",
+               "variables" => %{}
+             })
+  end
+
+  test "string literal containing } does not confuse the walker" do
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => ~s|mutation { addComment(input: {subjectId: "x", body: "} { reply"}) { clientMutationId } }|,
+               "variables" => %{}
+             })
+  end
+
+  test "string literal containing escaped quote does not exit string state" do
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => ~s|mutation { addComment(input: {subjectId: "x", body: "He said \\"hi}\\""}) { clientMutationId } }|,
+               "variables" => %{}
+             })
+  end
+
+  test "variable definition default value with quoted brace does not anchor outer body open" do
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    # The variable default string contains `{` and `}` plus an escaped quote;
+    # without string-literal awareness in scan_to_outer_open_brace/2 the body
+    # opener would latch onto the quoted `{` and the walker would extract
+    # garbage field names.
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => ~s|mutation Foo($body: String = "before { quoted \\"q\\" } after") { addComment(input: {subjectId: "x", body: $body}) { clientMutationId } }|,
+               "variables" => %{}
+             })
+  end
+
+  test "inline GraphQL comments inside mutation body are skipped, not gated as fields" do
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    # `#comment` at top level inside the mutation body. Without the `#` skip
+    # in maybe_emit/3 the walker would treat the comment text as a field
+    # name and the allowlist gate would reject the mutation.
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation {\n  #commentbeforefield\n  addComment(input: {subjectId: \"x\", body: \"hi\"}) { clientMutationId }\n}",
+               "variables" => %{}
+             })
+  end
+
+  test "skip_parens tolerates quoted parens inside argument string literals" do
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    # Unbalanced parens INSIDE a quoted string ("oops :)") plus an escaped
+    # quote — skip_parens must stay in string state until the closing `"`.
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => ~s|mutation { addComment(input: {subjectId: "x", body: "oops :) said \\"hi\\""}) { clientMutationId } }|,
+               "variables" => %{}
+             })
+  end
 end

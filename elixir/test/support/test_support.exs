@@ -121,6 +121,8 @@ defmodule SymphonyElixir.TestSupport do
           tracker_active_states: ["Agent Ready", "In Progress", "Rework"],
           tracker_terminal_states: ["Done"],
           tracker_dependency_gating_states: ["Agent Ready"],
+          tracker_gate_running_on_dependencies: nil,
+          tracker_cross_repo_blockers: nil,
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           worker_ssh_hosts: [],
@@ -164,6 +166,8 @@ defmodule SymphonyElixir.TestSupport do
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     tracker_dependency_gating_states = Keyword.get(config, :tracker_dependency_gating_states)
+    tracker_gate_running_on_dependencies = Keyword.get(config, :tracker_gate_running_on_dependencies)
+    tracker_cross_repo_blockers = Keyword.get(config, :tracker_cross_repo_blockers)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
@@ -208,6 +212,8 @@ defmodule SymphonyElixir.TestSupport do
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
         "  dependency_gating_states: #{yaml_value(tracker_dependency_gating_states)}",
+        optional_yaml("  gate_running_on_dependencies", tracker_gate_running_on_dependencies),
+        optional_yaml("  cross_repo_blockers", tracker_cross_repo_blockers),
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
@@ -310,6 +316,9 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
+
+  defp optional_yaml(_key, nil), do: nil
+  defp optional_yaml(key, value), do: "#{key}: #{yaml_value(value)}"
 
   defp hook_entry(_name, nil), do: nil
 

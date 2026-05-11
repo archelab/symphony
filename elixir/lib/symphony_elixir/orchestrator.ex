@@ -133,13 +133,17 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
         state = record_session_completion_totals(state, running_entry)
-        session_id = running_entry_session_id(running_entry)
+        stop_reason = if reason == :normal, do: :agent_exit_normal, else: :agent_exit_crashed
+
+        # §13.1 structured-log site for agent-process exits. The worker is
+        # already dead (we got :DOWN), so we skip the demonitor + terminate
+        # branch of terminate_running_issue/4 and call log_worker_stop/2 here
+        # directly to avoid the double-cleanup risk.
+        log_worker_stop(running_entry, stop_reason)
 
         state =
           case reason do
             :normal ->
-              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
-
               state
               |> complete_issue(issue_id)
               |> schedule_issue_retry(issue_id, 1, %{
@@ -150,8 +154,6 @@ defmodule SymphonyElixir.Orchestrator do
               })
 
             _ ->
-              Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
-
               next_attempt = next_retry_attempt_from_running(running_entry)
 
               schedule_issue_retry(state, issue_id, next_attempt, %{
@@ -161,8 +163,6 @@ defmodule SymphonyElixir.Orchestrator do
                 workspace_path: Map.get(running_entry, :workspace_path)
               })
           end
-
-        Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
 
         notify_dashboard()
         {:noreply, state}
@@ -302,6 +302,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  # Test seam: drives `apply_reconcile_running/2` end-to-end so a refactor
+  # cannot drift the production `reconcile_running_issues/1 ->
+  # apply_reconcile_running/2 -> reconcile_running/4` call path silently.
+  @spec apply_reconcile_running_for_test(State.t(), [map()]) :: State.t()
+  def apply_reconcile_running_for_test(%State{} = state, refresh_results)
+      when is_list(refresh_results) do
+    apply_reconcile_running(state, refresh_results)
+  end
+
+  @doc false
   @spec sort_issues_for_dispatch_for_test([term()]) :: [term()]
   def sort_issues_for_dispatch_for_test(issues) when is_list(issues) do
     sort_issues_for_dispatch(issues)
@@ -314,10 +324,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   # §13.1 single termination + structured-log site. EVERY worker stop —
-  # reconcile, retry, missing, stall, normal exit cleanup — funnels here so the
-  # reason vocabulary (:terminal_or_closed, :terminal_or_merged, :terminal_state,
-  # :inactive_state, :reconciled_missing, :dependencies_reopened, :stall_restart,
-  # :retry_terminal, :retry_inactive, :reassigned, :manual) lives in ONE place.
+  # reconcile, missing, stall, agent-exit cleanup — funnels through
+  # `log_worker_stop/2` so the reason vocabulary lives in ONE place. The full
+  # vocabulary actually used in the codebase today:
+  #   :terminal_or_closed, :terminal_or_merged, :terminal_state,
+  #   :inactive_state, :reconciled_missing, :dependencies_reopened,
+  #   :stall_restart, :agent_exit_normal, :agent_exit_crashed.
   defp terminate_running_issue(state, issue_id, cleanup_workspace, reason)
 
   defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace, reason)
