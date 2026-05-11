@@ -80,7 +80,7 @@ defmodule SymphonyElixir.Workspace do
 
   defp create_workspace(workspace) do
     _ = File.rm_rf!(workspace)
-    :ok = File.mkdir_p!(workspace)
+    File.mkdir_p!(workspace)
     {:ok, workspace, true}
   end
 

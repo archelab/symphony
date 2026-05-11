@@ -274,7 +274,7 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:retry_attempts, %{})
       end)
 
-      send(pid, :tick)
+      send(pid, {:tick, initial_state.tick_token})
       Process.sleep(100)
       state = :sys.get_state(pid)
 
