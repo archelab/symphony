@@ -1,6 +1,23 @@
 defmodule SymphonyElixir.TestSupport do
   @workflow_prompt "You are an agent for this repository."
 
+  # When workpad is enabled in a test fixture WORKFLOW.md but the test author
+  # did not explicitly pass a `:prompt` override, swap in a prompt that
+  # references the canonical workpad Liquid variables. SPEC §11.8.9 (enforced
+  # by `Workflow.load/1`) requires the prompt template to reference at least
+  # one of the five workpad vars when `agent.workpad.enabled: true`. Keeping
+  # the default in lock-step with the validation keeps existing workpad-enabled
+  # tests authoring-light without each having to embed a workpad prompt
+  # boilerplate just to satisfy config-time validation.
+  @workpad_workflow_prompt """
+  You are an agent for this repository.
+
+  Workpad context (SPEC §11.8):
+  thread_id={{ thread_id }} subject_id={{ subject_id }}
+  dispatched_at={{ dispatched_at }} model={{ model }}
+  {% if prior_sessions %}prior_sessions_count={{ prior_sessions.size }}{% endif %}
+  """
+
   defmacro __using__(_opts) do
     quote do
       use ExUnit.Case
@@ -153,10 +170,24 @@ defmodule SymphonyElixir.TestSupport do
           observability_render_interval_ms: 16,
           server_port: nil,
           server_host: nil,
-          prompt: @workflow_prompt
+          prompt: nil
         ],
         overrides
       )
+
+    config =
+      case Keyword.get(config, :prompt) do
+        nil ->
+          default_prompt =
+            if Keyword.get(config, :agent_workpad_enabled) == true,
+              do: @workpad_workflow_prompt,
+              else: @workflow_prompt
+
+          Keyword.put(config, :prompt, default_prompt)
+
+        _ ->
+          config
+      end
 
     tracker_kind = Keyword.get(config, :tracker_kind)
     tracker_endpoint = Keyword.get(config, :tracker_endpoint)

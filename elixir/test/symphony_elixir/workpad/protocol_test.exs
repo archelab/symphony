@@ -25,6 +25,13 @@ defmodule SymphonyElixir.Workpad.ProtocolTest do
     assert Protocol.default_version() == "v1"
   end
 
+  test "prompt_variables/0 lists the five workpad Liquid variables (SPEC §11.8.5)" do
+    vars = Protocol.prompt_variables()
+    assert vars == ~w(thread_id subject_id prior_sessions dispatched_at model)
+    assert Enum.all?(vars, &is_binary/1)
+    assert length(vars) == 5
+  end
+
   test "Workpad.Protocol defaults match Config.Schema.Agent.Workpad defaults" do
     w = struct(SymphonyElixir.Config.Schema.Agent.Workpad)
     assert w.version == Protocol.default_version()
