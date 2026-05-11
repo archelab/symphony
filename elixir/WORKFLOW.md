@@ -1,18 +1,6 @@
 ---
 tracker:
-  kind: linear
-  project_slug: "symphony-0c79b11b75ea"
-  active_states:
-    - Todo
-    - In Progress
-    - Merging
-    - Rework
-  terminal_states:
-    - Closed
-    - Cancelled
-    - Canceled
-    - Duplicate
-    - Done
+  kind: memory
 polling:
   interval_ms: 5000
 workspace:

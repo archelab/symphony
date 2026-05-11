@@ -44,14 +44,31 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
 
+    @valid_owner_types ~w(organization user)
+    # PR1 cuts Linear from the routed kinds. The Linear modules still exist
+    # (slated for deletion in PR2 Task 8b) but `tracker.kind: "linear"` is no
+    # longer accepted — Tracker.adapter/0 only routes to Github + Memory.
+    @valid_kinds ~w(github memory)
+    @valid_kinds_for_dispatch ~w(issue pull_request draft_issue)
+
     embedded_schema do
       field(:kind, :string)
-      field(:endpoint, :string, default: "https://api.linear.app/graphql")
-      field(:api_key, :string)
-      field(:project_slug, :string)
-      field(:assignee, :string)
+      field(:endpoint, :string, default: "https://api.github.com/graphql")
+      field(:api_token, :string)
+      field(:owner, :string)
+      field(:owner_type, :string, default: "organization")
+      field(:project_number, :integer)
+      field(:project_id, :string)
+      field(:repo, :string)
+      field(:status_field, :string, default: "Status")
+      field(:priority_field, :string, default: "Priority")
+      field(:priority_mapping, :map, default: %{})
+      field(:include_kinds, {:array, :string}, default: ["issue", "pull_request"])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
-      field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      field(:terminal_states, {:array, :string}, default: ["Done"])
+      field(:dependency_gating_states, {:array, :string}, default: ["Todo"])
+      field(:gate_running_on_dependencies, :boolean, default: false)
+      field(:cross_repo_blockers, :boolean, default: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -59,9 +76,54 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_token,
+          :owner,
+          :owner_type,
+          :project_number,
+          :project_id,
+          :repo,
+          :status_field,
+          :priority_field,
+          :priority_mapping,
+          :include_kinds,
+          :active_states,
+          :terminal_states,
+          :dependency_gating_states,
+          :gate_running_on_dependencies,
+          :cross_repo_blockers
+        ],
         empty_values: []
       )
+      |> validate_inclusion(:kind, @valid_kinds, message: "unsupported_tracker_kind")
+      |> validate_inclusion(:owner_type, @valid_owner_types)
+      |> validate_subset(:include_kinds, @valid_kinds_for_dispatch)
+      |> validate_project_identifier()
+      |> validate_api_token_present()
+    end
+
+    defp validate_api_token_present(changeset) do
+      case {get_field(changeset, :kind), get_field(changeset, :api_token)} do
+        {"github", token} when is_binary(token) and token != "" -> changeset
+        {"github", _} -> add_error(changeset, :api_token, "missing_tracker_api_token")
+        _ -> changeset
+      end
+    end
+
+    defp validate_project_identifier(changeset) do
+      project_id = get_field(changeset, :project_id)
+      project_number = get_field(changeset, :project_number)
+      owner = get_field(changeset, :owner)
+      kind = get_field(changeset, :kind)
+
+      cond do
+        kind != "github" -> changeset
+        is_binary(project_id) and project_id != "" -> changeset
+        is_integer(project_number) and is_binary(owner) and owner != "" -> changeset
+        true -> add_error(changeset, :project_id, "project_id or (owner + project_number) is required")
+      end
     end
   end
 
@@ -282,12 +344,28 @@ defmodule SymphonyElixir.Config.Schema do
     |> apply_action(:validate)
     |> case do
       {:ok, settings} ->
-        {:ok, finalize_settings(settings)}
+        finalized = finalize_settings(settings)
+
+        case validate_finalized_settings(finalized) do
+          :ok -> {:ok, finalized}
+          {:error, message} -> {:error, {:invalid_workflow_config, message}}
+        end
 
       {:error, changeset} ->
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
     end
   end
+
+  defp validate_finalized_settings(%{tracker: %{kind: "github", api_token: token}})
+       when is_binary(token) and token != "" do
+    :ok
+  end
+
+  defp validate_finalized_settings(%{tracker: %{kind: "github"}}) do
+    {:error, "tracker.api_token missing_tracker_api_token"}
+  end
+
+  defp validate_finalized_settings(_settings), do: :ok
 
   @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
@@ -368,8 +446,7 @@ defmodule SymphonyElixir.Config.Schema do
   defp finalize_settings(settings) do
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+      | api_token: resolve_secret_setting(settings.tracker.api_token, System.get_env("GITHUB_TOKEN"))
     }
 
     workspace = %{

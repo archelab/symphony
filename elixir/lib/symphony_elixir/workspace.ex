@@ -203,9 +203,20 @@ defmodule SymphonyElixir.Workspace do
     {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
   end
 
-  defp safe_identifier(identifier) do
-    String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
+  @doc """
+  Sanitize an issue identifier into a workspace directory name per spec §4.2.
+
+  The `/` and `#` characters MUST be replaced; otherwise the identifier
+  would either escape the workspace root (path-separator collision) or
+  collide with a literal `#` in shell expansions.
+  """
+  @spec workspace_key(String.t()) :: String.t()
+  def workspace_key(identifier) when is_binary(identifier) do
+    Regex.replace(~r/[^A-Za-z0-9._-]/, identifier, "_")
   end
+
+  # preserves nil → "issue" default for legacy callers; new code should call workspace_key/1 directly
+  defp safe_identifier(identifier), do: workspace_key(identifier || "issue")
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
     hooks = Config.settings!().hooks

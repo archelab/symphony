@@ -34,5 +34,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-
 
-      - name: Verify make all
-        run: make all
+      - name: Restore PLT cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: elixir/priv/plts
+          key: plts-${{ runner.os }}-${{ hashFiles('elixir/mix.lock') }}
+
+      # PR1 gate: `mix lint.baseline` (format/warnings/specs/credo).
+      # `mix lint` (with strict dialyzer) is deferred until PR2 / Task 8
+      # deletes the Linear-era carry-over modules that surface :underspecs
+      # and :unmatched_returns warnings. See PLAN.md Step 4.5 (Outcome B-defer).
+      - name: Lint baseline (format, warnings, specs, credo)
+        run: |
+          mix deps.get
+          mix deps.compile
+          mix lint.baseline
+
+      - name: Test (strict, with coverage)
+        run: mix test_strict

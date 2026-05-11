@@ -1,9 +1,11 @@
 defmodule SymphonyElixir.Linear.Adapter do
   @moduledoc """
   Linear-backed tracker adapter.
-  """
 
-  @behaviour SymphonyElixir.Tracker
+  Vestigial in PR1: no longer routed through `SymphonyElixir.Tracker.adapter/0`
+  and no longer claims `@behaviour SymphonyElixir.Tracker`. PR2 Task 8b deletes
+  this file alongside the rest of the Linear stack.
+  """
 
   alias SymphonyElixir.Linear.Client
 
