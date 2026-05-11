@@ -70,12 +70,29 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, value), do: System.put_env(key, value)
 
   def stop_default_http_server do
-    case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
+    # `Supervisor.which_children/1` can exit with `:noproc` (supervisor never
+    # started) or `:shutdown` (supervisor mid-teardown). Treat both as "no
+    # HTTP server to stop". Without this guard, a setup that runs while
+    # another test is restarting a sibling child (WorkflowStore, Orchestrator,
+    # PubSub) cascades a `GenServer.call ... :which_children EXIT` into every
+    # subsequent test in the suite.
+    children =
+      try do
+        Supervisor.which_children(SymphonyElixir.Supervisor)
+      catch
+        :exit, _ -> []
+      end
+
+    case Enum.find(children, fn
            {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
            _child -> false
          end) do
       {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
-        :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
+        try do
+          :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
+        catch
+          :exit, _ -> :ok
+        end
 
         if Process.alive?(pid) do
           Process.exit(pid, :normal)

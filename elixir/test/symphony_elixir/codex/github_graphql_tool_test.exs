@@ -1,0 +1,175 @@
+defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
+  use SymphonyElixir.TestSupport
+  alias SymphonyElixir.Codex.GithubGraphqlTool
+
+  test "tool definition declares query+variables schema" do
+    %{name: name, description: desc, parameters: params} = GithubGraphqlTool.definition()
+    assert name == "github_graphql"
+    assert desc =~ "GitHub"
+    assert get_in(params, ["properties", "query"])
+    assert get_in(params, ["properties", "variables"])
+    assert params["required"] == ["query"]
+  end
+
+  test "rejects mutations not on the allowlist" do
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    {:error, {:mutation_not_allowed, name}} =
+      GithubGraphqlTool.handle(%{
+        "query" => "mutation Drop { deleteProjectV2Field(input:{fieldId:\"x\"}) { __typename } }",
+        "variables" => %{}
+      })
+
+    assert name == "deleteProjectV2Field"
+  end
+
+  test "passes through allowlisted mutation" do
+    fake =
+      fn query, _v, _opts ->
+        assert query =~ "addComment"
+        {:ok, %{"data" => %{"addComment" => %{"clientMutationId" => "x"}}}}
+      end
+
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:ok, %{"data" => %{"addComment" => _}}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { addComment(input:{subjectId:\"x\", body:\"hi\"}) { clientMutationId } }",
+               "variables" => %{}
+             })
+  end
+
+  test "rejects multi-mutation document where any field is not allowlisted" do
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    {:error, {:mutation_not_allowed, name}} =
+      GithubGraphqlTool.handle(%{
+        "query" => """
+        mutation {
+          addComment(input: {subjectId: "x", body: "hi"}) { clientMutationId }
+          deleteIssue(input: {issueId: "y"}) { clientMutationId }
+        }
+        """,
+        "variables" => %{}
+      })
+
+    assert name == "deleteIssue"
+  end
+
+  test "named mutation with variables extracts the field name correctly" do
+    fake =
+      fn query, _v, _opts ->
+        assert query =~ "addComment"
+        {:ok, %{"data" => %{"addComment" => %{}}}}
+      end
+
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation Op($id: ID!, $body: String!) { addComment(input: {subjectId: $id, body: $body}) { clientMutationId } }",
+               "variables" => %{"id" => "x", "body" => "hi"}
+             })
+  end
+
+  test "rejects malformed mutation with mutation_unparseable" do
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:error, {:mutation_unparseable, _}} =
+             GithubGraphqlTool.handle(%{"query" => "mutation Op", "variables" => %{}})
+
+    assert {:error, {:mutation_unparseable, _}} =
+             GithubGraphqlTool.handle(%{"query" => "mutation { ", "variables" => %{}})
+  end
+
+  test "shorthand query syntax {} is allowed without mutation gating" do
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"viewer" => %{"login" => "x"}}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{"query" => "{ viewer { login } }", "variables" => %{}})
+  end
+
+  test "leading comments are stripped before keyword detection" do
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"viewer" => %{}}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => "# leading comment\n# another\nquery { viewer { login } }",
+               "variables" => %{}
+             })
+  end
+
+  test "unknown top-level keyword returns mutation_unparseable" do
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:error, {:mutation_unparseable, _}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "fragment Foo on Bar { id }",
+               "variables" => %{}
+             })
+  end
+
+  test "mutation with nested parens and selection sets parses top-level fields correctly" do
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    # Nested parens inside argument literals exercise the skip_parens depth
+    # counter; nested selection sets inside the outer braces exercise the
+    # depth > 0 walk_fields branch (those names must not be promoted to
+    # top-level mutation fields).
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => """
+               mutation {
+                 addComment(input: {subjectId: "x", body: "((nested))"}) {
+                   clientMutationId
+                   commentEdge { node { id } }
+                 }
+               }
+               """,
+               "variables" => %{}
+             })
+  end
+
+  test "empty mutation body returns mutation_unparseable" do
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:error, {:mutation_unparseable, _}} =
+             GithubGraphqlTool.handle(%{"query" => "mutation {  }", "variables" => %{}})
+  end
+
+  test "mutation body whose only top-level field has an unclosed argument list" do
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    # The regex permits this because the outer `{...}` is balanced; the
+    # internal `(` is not. `skip_parens` consumes to end-of-charlist and
+    # returns [], which is then re-entered by `walk_fields/4` and emits no
+    # top-level field — so the document is rejected as unparseable.
+    assert {:error, {:mutation_unparseable, _}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { addComment(input }",
+               "variables" => %{}
+             })
+  end
+end

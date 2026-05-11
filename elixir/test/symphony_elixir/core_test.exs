@@ -1332,32 +1332,45 @@ defmodule SymphonyElixir.CoreTest do
     workflow_path = Workflow.workflow_file_path()
     Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md", File.cwd!()))
 
-    issue = %Issue{
-      identifier: "MT-616",
-      title: "Use rich templates for WORKFLOW.md",
-      description: "Render with rich template variables",
-      state: "In Progress",
-      url: "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd",
-      labels: ["templating", "workflow"]
-    }
+    issue =
+      Issue.new(%{
+        id: "PVTI_abc",
+        identifier: "archelab/symphony#42",
+        kind: "issue",
+        title: "Use rich templates for WORKFLOW.md",
+        description: "Render with rich template variables",
+        state: "In Progress",
+        repository: %{
+          owner: "archelab",
+          name: "symphony",
+          name_with_owner: "archelab/symphony",
+          default_branch: "main"
+        },
+        number: 42,
+        url: "https://github.com/archelab/symphony/issues/42",
+        labels: ["templating", "workflow"],
+        blocked_by: [],
+        issue_state: "OPEN"
+      })
 
     on_exit(fn -> Workflow.set_workflow_file_path(workflow_path) end)
 
-    prompt = PromptBuilder.build_prompt(issue, attempt: 2)
+    prompt =
+      PromptBuilder.build_prompt(issue, attempt: 2, last_run_completed_at: "2026-05-09T20:00:00Z")
 
-    assert prompt =~ "You are working on a Linear ticket `MT-616`"
-    assert prompt =~ "Issue context:"
-    assert prompt =~ "Identifier: MT-616"
+    assert prompt =~ "You are working on GitHub item `archelab/symphony#42`"
+    assert prompt =~ "## Item context"
+    assert prompt =~ "Identifier: archelab/symphony#42"
     assert prompt =~ "Title: Use rich templates for WORKFLOW.md"
-    assert prompt =~ "Current status: In Progress"
-    assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
+    assert prompt =~ "Current Project Status: In Progress"
+    assert prompt =~ "https://github.com/archelab/symphony/issues/42"
     assert prompt =~ "This is an unattended orchestration session."
-    assert prompt =~ "Only stop early for a true blocker"
-    assert prompt =~ "Do not include \"next steps for user\""
-    assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
-    assert prompt =~ "Do not call `gh pr merge` directly"
-    assert prompt =~ "Continuation context:"
-    assert prompt =~ "retry attempt #2"
+    assert prompt =~ "## Continuation context"
+    assert prompt =~ "dispatch attempt #2"
+    assert prompt =~ "Prior session ended at 2026-05-09T20:00:00Z"
+    assert prompt =~ "gh issue view 42 -R archelab/symphony"
+    assert prompt =~ "Open work on a feature branch and submit a Pull Request against\n`main`"
+    assert prompt =~ "`github_graphql` tool is registered"
   end
 
   test "prompt builder adds continuation guidance for retries" do
