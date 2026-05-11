@@ -68,6 +68,12 @@ defmodule SymphonyElixir.MixProject do
     ]
   end
 
+  # `test_strict` is not auto-detected as a test alias by Mix's env inference
+  # (the alias name doesn't start with `test`-the-task), so pin it explicitly.
+  def cli do
+    [preferred_envs: [test_strict: :test]]
+  end
+
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
