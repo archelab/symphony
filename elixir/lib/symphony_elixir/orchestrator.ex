@@ -1067,8 +1067,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp prune_sessions(records) when is_list(records), do: Enum.take(records, max_sessions())
 
-  # PR3 Task 2 swaps to Config.settings!().agent.workpad.max_sessions_visible.
-  defp max_sessions, do: 20
+  defp max_sessions, do: Config.settings!().agent.workpad.max_sessions_visible
 
   # Returns the head (most-recent) `:completed_at` for the issue, or nil if
   # no prior session exists. Replaces the old `get_in/2` on a single-record
