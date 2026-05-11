@@ -228,8 +228,12 @@ defmodule SymphonyElixir.Github.Adapter do
        }),
        do: "#{nwo}##{n}"
 
-  defp identifier_from_refresh(%{"content" => %{"__typename" => "DraftIssue", "id" => id}}),
-    do: "draft:" <> String.slice(id, -8, 8)
+  # Draft identifier must come from the OUTER project-item id (PVTI_*), not
+  # the inner DraftIssue content id. Normalize.identifier_for/4 slices the
+  # project-item id during dispatch; the refresh path has to match so the
+  # same draft has one stable identifier across dispatch and reconcile.
+  defp identifier_from_refresh(%{"id" => item_id, "content" => %{"__typename" => "DraftIssue"}}),
+    do: "draft:" <> String.slice(item_id, -8, 8)
 
   defp terminal_or_state(%{"content" => %{"__typename" => "Issue", "state" => "CLOSED"}}, _), do: "<closed>"
 
