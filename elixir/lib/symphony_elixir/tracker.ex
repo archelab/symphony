@@ -20,11 +20,13 @@ defmodule SymphonyElixir.Tracker do
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids), do: adapter().fetch_issue_states_by_ids(issue_ids)
 
-  @spec adapter() :: module()
+  @type adapter_module :: SymphonyElixir.Github.Adapter | SymphonyElixir.Tracker.Memory
+
+  @spec adapter() :: adapter_module()
   def adapter, do: adapter_for(Config.settings!().tracker.kind)
 
   @doc false
-  @spec adapter_for(String.t()) :: module()
+  @spec adapter_for(String.t()) :: adapter_module() | no_return()
   def adapter_for("memory"), do: SymphonyElixir.Tracker.Memory
   def adapter_for("github"), do: SymphonyElixir.Github.Adapter
 

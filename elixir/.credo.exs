@@ -85,13 +85,7 @@
           {Credo.Check.Design.AliasUsage,
            [priority: :low, if_nested_deeper_than: 2, if_called_more_often_than: 0]},
           {Credo.Check.Design.TagFIXME, []},
-          # PR1 keeps a fleet of `# TODO(Task 6):` and `# TODO(Task 8):`
-          # comments in `:skip_until_task_6`-tagged tests as load-bearing
-          # scope markers. They surface as advisory notes via `mix credo`
-          # but must not fail the lint gate (`mix lint.baseline` runs in
-          # CI). Reset exit_status to 0 until Task 6 / 8 retire the
-          # markers themselves.
-          {Credo.Check.Design.TagTODO, [exit_status: 0]},
+          {Credo.Check.Design.TagTODO, [exit_status: 2]},
 
           #
           ## Readability Checks

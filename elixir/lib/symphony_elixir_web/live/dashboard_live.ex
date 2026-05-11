@@ -15,10 +15,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
 
-    if connected?(socket) do
-      :ok = ObservabilityPubSub.subscribe()
-      schedule_runtime_tick()
-    end
+    _ =
+      if connected?(socket) do
+        :ok = ObservabilityPubSub.subscribe()
+        schedule_runtime_tick()
+      end
 
     {:ok, socket}
   end

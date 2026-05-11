@@ -47,6 +47,10 @@ non-fatal — exit 0).
 
 ### Downstream stale Linear field reads (PR2 / Task 6 / Task 8 must fix)
 
+All resolved in Task 8b. The catalog below is kept for archaeological
+context: every call site listed has either been deleted along with the
+Linear modules or rewritten against the GitHub Projects v2 schema.
+
 Production code that still references removed Tracker fields
 (`api_key`, `project_slug`, `assignee`) or whitelists `linear` as a
 valid tracker `kind`. Each line was kept compiling only because the dev

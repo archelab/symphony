@@ -3,25 +3,6 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.Codex.DynamicTool
 
-  test "tool_specs advertises the linear_graphql input contract" do
-    specs = DynamicTool.tool_specs()
-
-    %{
-      "description" => description,
-      "inputSchema" => %{
-        "properties" => %{
-          "query" => _,
-          "variables" => _
-        },
-        "required" => ["query"],
-        "type" => "object"
-      },
-      "name" => "linear_graphql"
-    } = Enum.find(specs, &(&1["name"] == "linear_graphql"))
-
-    assert description =~ "Linear"
-  end
-
   test "tool_specs advertises the github_graphql input contract" do
     specs = DynamicTool.tool_specs()
 
@@ -46,7 +27,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql", "github_graphql"]
+               "supportedTools" => ["github_graphql"]
              }
            }
 
@@ -58,269 +39,125 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            ]
   end
 
-  test "linear_graphql returns successful GraphQL responses as tool text" do
-    test_pid = self()
+  describe "github_graphql dispatch" do
+    setup do
+      on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{
-          "query" => "query Viewer { viewer { id } }",
-          "variables" => %{"includeTeams" => false}
-        },
-        linear_client: fn query, variables, opts ->
-          send(test_pid, {:linear_client_called, query, variables, opts})
-          {:ok, %{"data" => %{"viewer" => %{"id" => "usr_123"}}}}
-        end
-      )
+      :ok
+    end
 
-    assert_received {:linear_client_called, "query Viewer { viewer { id } }", %{"includeTeams" => false}, []}
+    test "string-form query is routed through github_graphql" do
+      test_pid = self()
 
-    assert response["success"] == true
-    assert Jason.decode!(response["output"]) == %{"data" => %{"viewer" => %{"id" => "usr_123"}}}
-    assert response["contentItems"] == [%{"type" => "inputText", "text" => response["output"]}]
-  end
+      Application.put_env(:symphony_elixir, :github_client, fn query, variables, opts ->
+        send(test_pid, {:github_client_called, query, variables, opts})
+        {:ok, %{"data" => %{"viewer" => %{"login" => "octocat"}}}}
+      end)
 
-  test "linear_graphql accepts a raw GraphQL query string" do
-    test_pid = self()
+      response = DynamicTool.execute("github_graphql", "  query Viewer { viewer { login } }  ")
 
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        "  query Viewer { viewer { id } }  ",
-        linear_client: fn query, variables, opts ->
-          send(test_pid, {:linear_client_called, query, variables, opts})
-          {:ok, %{"data" => %{"viewer" => %{"id" => "usr_456"}}}}
-        end
-      )
+      assert_received {:github_client_called, "query Viewer { viewer { login } }", %{}, _opts}
+      assert response["success"] == true
+      assert Jason.decode!(response["output"]) == %{"data" => %{"viewer" => %{"login" => "octocat"}}}
+    end
 
-    assert_received {:linear_client_called, "query Viewer { viewer { id } }", %{}, []}
-    assert response["success"] == true
-  end
+    test "map-form query with variables forwards both" do
+      test_pid = self()
 
-  test "linear_graphql ignores legacy operationName arguments" do
-    test_pid = self()
+      Application.put_env(:symphony_elixir, :github_client, fn query, variables, opts ->
+        send(test_pid, {:github_client_called, query, variables, opts})
+        {:ok, %{"data" => %{"ok" => true}}}
+      end)
 
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "query Viewer { viewer { id } }", "operationName" => "Viewer"},
-        linear_client: fn query, variables, opts ->
-          send(test_pid, {:linear_client_called, query, variables, opts})
-          {:ok, %{"data" => %{"viewer" => %{"id" => "usr_789"}}}}
-        end
-      )
+      response =
+        DynamicTool.execute("github_graphql", %{
+          "query" => "query Viewer { viewer { login } }",
+          "variables" => %{"limit" => 10}
+        })
 
-    assert_received {:linear_client_called, "query Viewer { viewer { id } }", %{}, []}
-    assert response["success"] == true
-  end
+      assert_received {:github_client_called, "query Viewer { viewer { login } }", %{"limit" => 10}, _opts}
 
-  test "linear_graphql passes multi-operation documents through unchanged" do
-    test_pid = self()
+      assert response["success"] == true
+    end
 
-    query = """
-    query Viewer { viewer { id } }
-    query Teams { teams { nodes { id } } }
-    """
+    test "blank string-form query returns a failure payload without calling the client" do
+      Application.put_env(:symphony_elixir, :github_client, fn _query, _variables, _opts ->
+        flunk("github client should not be called when the query is blank")
+      end)
 
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => query},
-        linear_client: fn forwarded_query, variables, opts ->
-          send(test_pid, {:linear_client_called, forwarded_query, variables, opts})
-          {:ok, %{"errors" => [%{"message" => "Must provide operation name if query contains multiple operations."}]}}
-        end
-      )
+      response = DynamicTool.execute("github_graphql", "   ")
 
-    assert_received {:linear_client_called, forwarded_query, %{}, []}
-    assert forwarded_query == String.trim(query)
-    assert response["success"] == false
-  end
+      assert response["success"] == false
 
-  test "linear_graphql rejects blank raw query strings even when using the default client" do
-    response = DynamicTool.execute("linear_graphql", "   ")
-
-    assert response["success"] == false
-
-    assert Jason.decode!(response["output"]) == %{
-             "error" => %{
-               "message" => "`linear_graphql` requires a non-empty `query` string."
+      assert Jason.decode!(response["output"]) == %{
+               "error" => %{
+                 "message" => "`github_graphql` requires a non-empty `query` string."
+               }
              }
-           }
-  end
+    end
 
-  test "linear_graphql marks GraphQL error responses as failures while preserving the body" do
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "mutation BadMutation { nope }"},
-        linear_client: fn _query, _variables, _opts ->
-          {:ok, %{"errors" => [%{"message" => "Unknown field `nope`"}], "data" => nil}}
-        end
-      )
+    test "invalid argument types return a failure payload" do
+      Application.put_env(:symphony_elixir, :github_client, fn _query, _variables, _opts ->
+        flunk("github client should not be called when arguments are invalid")
+      end)
 
-    assert response["success"] == false
+      response = DynamicTool.execute("github_graphql", [:not, :valid])
 
-    assert Jason.decode!(response["output"]) == %{
-             "data" => nil,
-             "errors" => [%{"message" => "Unknown field `nope`"}]
-           }
-  end
+      assert response["success"] == false
 
-  test "linear_graphql marks atom-key GraphQL error responses as failures" do
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "query Viewer { viewer { id } }"},
-        linear_client: fn _query, _variables, _opts ->
-          {:ok, %{errors: [%{message: "boom"}], data: nil}}
-        end
-      )
-
-    assert response["success"] == false
-  end
-
-  test "linear_graphql validates required arguments before calling Linear" do
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"variables" => %{"commentId" => "comment-1"}},
-        linear_client: fn _query, _variables, _opts ->
-          flunk("linear client should not be called when arguments are invalid")
-        end
-      )
-
-    assert response["success"] == false
-
-    assert Jason.decode!(response["output"]) == %{
-             "error" => %{
-               "message" => "`linear_graphql` requires a non-empty `query` string."
+      assert Jason.decode!(response["output"]) == %{
+               "error" => %{
+                 "message" => "`github_graphql` expects either a GraphQL query string or an object with `query` and optional `variables`."
+               }
              }
-           }
+    end
 
-    blank_query =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "   "},
-        linear_client: fn _query, _variables, _opts ->
-          flunk("linear client should not be called when the query is blank")
-        end
-      )
+    test "mutations not on the allowlist surface as a structured failure" do
+      Application.put_env(:symphony_elixir, :github_client, fn _query, _variables, _opts ->
+        flunk("github client should not be called for rejected mutations")
+      end)
 
-    assert blank_query["success"] == false
-  end
+      response =
+        DynamicTool.execute("github_graphql", %{"query" => "mutation { deleteProject(input: {}) { id } }"})
 
-  test "linear_graphql rejects invalid argument types" do
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        [:not, :valid],
-        linear_client: fn _query, _variables, _opts ->
-          flunk("linear client should not be called when arguments are invalid")
-        end
-      )
+      assert response["success"] == false
+      decoded = Jason.decode!(response["output"])
+      assert decoded["error"]["message"] =~ "github_graphql"
+      assert decoded["error"]["mutation"] == "deleteProject"
+    end
 
-    assert response["success"] == false
+    test "GraphQL error responses are surfaced as failures" do
+      Application.put_env(:symphony_elixir, :github_client, fn _query, _variables, _opts ->
+        {:ok, %{"errors" => [%{"message" => "boom"}], "data" => nil}}
+      end)
 
-    assert Jason.decode!(response["output"]) == %{
-             "error" => %{
-               "message" => "`linear_graphql` expects either a GraphQL query string or an object with `query` and optional `variables`."
-             }
-           }
-  end
+      response = DynamicTool.execute("github_graphql", %{"query" => "query { viewer { login } }"})
 
-  test "linear_graphql rejects invalid variables" do
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "query Viewer { viewer { id } }", "variables" => ["bad"]},
-        linear_client: fn _query, _variables, _opts ->
-          flunk("linear client should not be called when variables are invalid")
-        end
-      )
+      assert response["success"] == false
+      assert Jason.decode!(response["output"]) == %{"errors" => [%{"message" => "boom"}], "data" => nil}
+    end
 
-    assert response["success"] == false
+    test "client transport errors surface a structured failure payload" do
+      Application.put_env(:symphony_elixir, :github_client, fn _query, _variables, _opts ->
+        {:error, {:request_failed, :timeout}}
+      end)
 
-    assert Jason.decode!(response["output"]) == %{
-             "error" => %{
-               "message" => "`linear_graphql.variables` must be a JSON object when provided."
-             }
-           }
-  end
+      response = DynamicTool.execute("github_graphql", %{"query" => "query { viewer { login } }"})
 
-  test "linear_graphql formats transport and auth failures" do
-    missing_token =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "query Viewer { viewer { id } }"},
-        linear_client: fn _query, _variables, _opts -> {:error, :missing_linear_api_token} end
-      )
+      assert response["success"] == false
+      decoded = Jason.decode!(response["output"])
+      assert decoded["error"]["message"] == "GitHub GraphQL tool execution failed."
+    end
 
-    assert missing_token["success"] == false
+    test "non-JSON-encodable client payloads fall back to inspect" do
+      Application.put_env(:symphony_elixir, :github_client, fn _query, _variables, _opts ->
+        {:ok, :ok}
+      end)
 
-    assert Jason.decode!(missing_token["output"]) == %{
-             "error" => %{
-               "message" => "Symphony is missing Linear auth. Set `linear.api_key` in `WORKFLOW.md` or export `LINEAR_API_KEY`."
-             }
-           }
+      response = DynamicTool.execute("github_graphql", %{"query" => "query { viewer { login } }"})
 
-    status_error =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "query Viewer { viewer { id } }"},
-        linear_client: fn _query, _variables, _opts -> {:error, {:linear_api_status, 503}} end
-      )
-
-    assert Jason.decode!(status_error["output"]) == %{
-             "error" => %{
-               "message" => "Linear GraphQL request failed with HTTP 503.",
-               "status" => 503
-             }
-           }
-
-    request_error =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "query Viewer { viewer { id } }"},
-        linear_client: fn _query, _variables, _opts -> {:error, {:linear_api_request, :timeout}} end
-      )
-
-    assert Jason.decode!(request_error["output"]) == %{
-             "error" => %{
-               "message" => "Linear GraphQL request failed before receiving a successful response.",
-               "reason" => ":timeout"
-             }
-           }
-  end
-
-  test "linear_graphql formats unexpected failures from the client" do
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "query Viewer { viewer { id } }"},
-        linear_client: fn _query, _variables, _opts -> {:error, :boom} end
-      )
-
-    assert response["success"] == false
-
-    assert Jason.decode!(response["output"]) == %{
-             "error" => %{
-               "message" => "Linear GraphQL tool execution failed.",
-               "reason" => ":boom"
-             }
-           }
-  end
-
-  test "linear_graphql falls back to inspect for non-JSON payloads" do
-    response =
-      DynamicTool.execute(
-        "linear_graphql",
-        %{"query" => "query Viewer { viewer { id } }"},
-        linear_client: fn _query, _variables, _opts -> {:ok, :ok} end
-      )
-
-    assert response["success"] == true
-    assert response["output"] == ":ok"
+      assert response["success"] == true
+      assert response["output"] == ":ok"
+    end
   end
 end

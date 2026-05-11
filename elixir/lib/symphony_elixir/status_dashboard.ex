@@ -82,7 +82,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   @spec notify_update(GenServer.name()) :: :ok
   def notify_update(server \\ __MODULE__) do
-    ObservabilityPubSub.broadcast_update()
+    _ = ObservabilityPubSub.broadcast_update()
 
     case GenServer.whereis(server) do
       pid when is_pid(pid) ->
@@ -104,7 +104,7 @@ defmodule SymphonyElixir.StatusDashboard do
     render_interval_ms = render_interval_ms_override || observability.render_interval_ms
     render_fun = Keyword.get(opts, :render_fun, &render_to_terminal/1)
     enabled = resolve_override(enabled_override, observability.dashboard_enabled and dashboard_enabled?())
-    schedule_tick(refresh_ms, enabled)
+    _ = schedule_tick(refresh_ms, enabled)
 
     {:ok,
      %__MODULE__{
@@ -148,7 +148,7 @@ defmodule SymphonyElixir.StatusDashboard do
   def handle_info(:tick, %{enabled: true} = state) do
     state = refresh_runtime_config(state)
     state = maybe_render(state)
-    schedule_tick(state.refresh_ms, true)
+    _ = schedule_tick(state.refresh_ms, true)
     {:noreply, state}
   end
 
@@ -393,11 +393,14 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_project_link_lines do
-    # PR2 transitional: `tracker.project_slug` (Linear-era) was removed from
-    # the GitHub Projects v2 schema. Task 8b will rebuild this header with the
-    # GitHub project URL derived from owner + project_number. Until then,
-    # render `n/a` so the snapshot tests don't crash on KeyError.
-    project_part = colorize("n/a", @ansi_gray)
+    tracker = Config.settings!().tracker
+
+    project_part =
+      case github_project_url(tracker) do
+        url when is_binary(url) -> colorize(url, @ansi_cyan)
+        _ -> colorize("n/a", @ansi_gray)
+      end
+
     project_line = colorize("│ Project: ", @ansi_bold) <> project_part
 
     case dashboard_url() do
@@ -408,6 +411,22 @@ defmodule SymphonyElixir.StatusDashboard do
         [project_line]
     end
   end
+
+  defp github_project_url(%{
+         kind: "github",
+         owner: owner,
+         owner_type: owner_type,
+         project_number: project_number
+       })
+       when is_binary(owner) and owner != "" and is_integer(project_number) do
+    case owner_type do
+      "organization" -> "https://github.com/orgs/#{owner}/projects/#{project_number}"
+      "user" -> "https://github.com/users/#{owner}/projects/#{project_number}"
+      _ -> nil
+    end
+  end
+
+  defp github_project_url(_tracker), do: nil
 
   defp format_project_refresh_line(%{checking?: true}) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("checking now…", @ansi_cyan)
@@ -526,12 +545,22 @@ defmodule SymphonyElixir.StatusDashboard do
   @spec format_timestamp_for_test(DateTime.t()) :: String.t()
   def format_timestamp_for_test(%DateTime{} = datetime), do: format_timestamp(datetime)
 
+  @typep snapshot_data ::
+           :error
+           | {:ok,
+              %{
+                :running => [map()],
+                :retrying => term(),
+                :codex_totals => map(),
+                optional(atom()) => term()
+              }}
+
   @doc false
-  @spec format_snapshot_content_for_test(term(), number()) :: String.t()
+  @spec format_snapshot_content_for_test(snapshot_data(), number()) :: String.t()
   def format_snapshot_content_for_test(snapshot_data, tps), do: format_snapshot_content(snapshot_data, tps)
 
   @doc false
-  @spec format_snapshot_content_for_test(term(), number(), integer() | nil) :: String.t()
+  @spec format_snapshot_content_for_test(snapshot_data(), number(), integer() | nil) :: String.t()
   def format_snapshot_content_for_test(snapshot_data, tps, terminal_columns),
     do: format_snapshot_content(snapshot_data, tps, terminal_columns)
 

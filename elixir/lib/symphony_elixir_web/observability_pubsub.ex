@@ -7,12 +7,12 @@ defmodule SymphonyElixirWeb.ObservabilityPubSub do
   @topic "observability:dashboard"
   @update_message :observability_updated
 
-  @spec subscribe() :: :ok | {:error, term()}
+  @spec subscribe() :: :ok | {:error, {:already_registered, pid()}}
   def subscribe do
     Phoenix.PubSub.subscribe(@pubsub, @topic)
   end
 
-  @spec broadcast_update() :: :ok
+  @spec broadcast_update() :: :ok | {:error, term()}
   def broadcast_update do
     case Process.whereis(@pubsub) do
       pid when is_pid(pid) ->

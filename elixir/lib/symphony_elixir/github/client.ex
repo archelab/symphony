@@ -106,9 +106,7 @@ defmodule SymphonyElixir.Github.Client do
   end
 
   # Req >= 0.4 normalizes response headers to a map of lowercased string keys
-  # to lists of values. Linear-style list-of-tuples and uppercase-key shapes
-  # were dropped along with that dead clause; the public surface only ever
-  # sees this shape.
+  # to lists of values. The public surface only ever sees this shape.
   defp fetch_header(headers, name) when is_map(headers) do
     case Map.get(headers, name) do
       [value | _] -> value

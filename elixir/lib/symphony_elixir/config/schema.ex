@@ -45,9 +45,7 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
 
     @valid_owner_types ~w(organization user)
-    # PR1 cuts Linear from the routed kinds. The Linear modules still exist
-    # (slated for deletion in PR2 Task 8b) but `tracker.kind: "linear"` is no
-    # longer accepted — Tracker.adapter/0 only routes to Github + Memory.
+    # Tracker.adapter/0 routes only to Github + Memory.
     @valid_kinds ~w(github memory)
     @valid_kinds_for_dispatch ~w(issue pull_request draft_issue)
 
