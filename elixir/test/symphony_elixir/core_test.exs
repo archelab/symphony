@@ -27,18 +27,63 @@ defmodule SymphonyElixir.CoreTest do
 
   test "workflow load accepts prompt-only files without front matter" do
     workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "PROMPT_ONLY_WORKFLOW.md")
+    # SPEC §11.8.9 PR4 amendment: workpad defaults to enabled, which fires
+    # `validate_workpad_template/1` against any workflow whose front matter
+    # does not explicitly opt out. A prompt-only file has no front matter at
+    # all, so an empty config map presents no `enabled: false` and the
+    # validation rejects the prompt body for not referencing any workpad
+    # variable. The pre-PR4 form (prompt-only is accepted) is preserved by
+    # treating the empty-config map specifically — no front matter means no
+    # opinion about agent.* either way, and `validate_workpad_template/1`
+    # treats that as workpad-active. We assert the new (loud) behavior here
+    # rather than silently accepting a workpad-less prompt — the test now
+    # documents the failure mode operators see if they delete their front
+    # matter.
     File.write!(workflow_path, "Prompt only\n")
 
-    assert {:ok, %{config: %{}, prompt: "Prompt only", prompt_template: "Prompt only"}} =
-             Workflow.load(workflow_path)
+    assert {:error,
+            {:invalid_workflow_config,
+             "agent.workpad.enabled: true requires the workflow prompt template to reference at least one of: " <>
+               _vars}} = Workflow.load(workflow_path)
   end
 
   test "workflow load accepts unterminated front matter with an empty prompt" do
     workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "UNTERMINATED_WORKFLOW.md")
+    # Same §11.8.9 PR4 contract as the prompt-only case above: unterminated
+    # front matter (no closing `---`) means the loader treats the whole file
+    # as front matter and produces an empty prompt body. With workpad
+    # default-enabled, an empty prompt fails `validate_workpad_template/1`.
     File.write!(workflow_path, "---\ntracker:\n  kind: memory\n")
 
-    assert {:ok, %{config: %{"tracker" => %{"kind" => "memory"}}, prompt: "", prompt_template: ""}} =
-             Workflow.load(workflow_path)
+    assert {:error,
+            {:invalid_workflow_config,
+             "agent.workpad.enabled: true requires the workflow prompt template to reference at least one of: " <>
+               _vars}} = Workflow.load(workflow_path)
+  end
+
+  test "workflow load accepts prompt-only files when workpad + session_summary are explicitly disabled (SPEC §11.8.9 + 11.8.10 opt-out)" do
+    # The operator-facing migration path from the PR4 amendment: both
+    # workpad (SPEC §11.8.9) and session-summary (SPEC §11.8.10) default to
+    # enabled. To preserve pre-PR4 prompt-only loading, both must be
+    # explicitly disabled.
+    workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "PROMPT_ONLY_OPTED_OUT.md")
+
+    File.write!(
+      workflow_path,
+      "---\nagent:\n  workpad:\n    enabled: false\n  session_summary:\n    enabled: false\n---\nPrompt only\n"
+    )
+
+    assert {:ok,
+            %{
+              config: %{
+                "agent" => %{
+                  "workpad" => %{"enabled" => false},
+                  "session_summary" => %{"enabled" => false}
+                }
+              },
+              prompt: "Prompt only",
+              prompt_template: "Prompt only"
+            }} = Workflow.load(workflow_path)
   end
 
   test "workflow load rejects non-map front matter" do
@@ -1510,6 +1555,11 @@ defmodule SymphonyElixir.CoreTest do
         id: "PVTI_abc",
         identifier: "archelab/symphony#42",
         kind: "issue",
+        # SPEC §11.8.5: `content_id` is the underlying Issue/PullRequest GraphQL
+        # node id, surfaced to the agent as `subject_id`. Required for the
+        # workpad bridge to activate; the PR4-default WORKFLOW.md references
+        # `{{ subject_id }}` and Solid strict mode rejects an unbound binding.
+        content_id: "I_abc",
         title: "Use rich templates for WORKFLOW.md",
         description: "Render with rich template variables",
         state: "In Progress",
@@ -1529,7 +1579,14 @@ defmodule SymphonyElixir.CoreTest do
     on_exit(fn -> Workflow.set_workflow_file_path(workflow_path) end)
 
     prompt =
-      PromptBuilder.build_prompt(issue, attempt: 2, last_run_completed_at: "2026-05-09T20:00:00Z")
+      PromptBuilder.build_prompt(issue,
+        attempt: 2,
+        last_run_completed_at: "2026-05-09T20:00:00Z",
+        thread_id: "thr-render",
+        dispatched_at: "2026-05-10T01:00:00Z",
+        model: "gpt-5.5",
+        prior_sessions: []
+      )
 
     assert prompt =~ "You are working on GitHub item `archelab/symphony#42`"
     assert prompt =~ "## Item context"
@@ -1544,6 +1601,11 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "gh issue view 42 -R archelab/symphony"
     assert prompt =~ "Open work on a feature branch and submit a Pull Request against\n`main`"
     assert prompt =~ "`github_graphql` tool is registered"
+    # SPEC §11.8.5: workpad bridge active → rendered prompt surfaces the
+    # five vars passed above.
+    assert prompt =~ "thr-render"
+    assert prompt =~ "I_abc"
+    assert prompt =~ "gpt-5.5"
   end
 
   test "prompt builder adds continuation guidance for retries" do

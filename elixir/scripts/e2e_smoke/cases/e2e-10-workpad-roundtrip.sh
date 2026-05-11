@@ -2,9 +2,10 @@
 # E2E-10: Agent Workpad Protocol round-trip (SPEC §11.8).
 #
 # 1. Swap WORKFLOW.md for a workpad-enabled variant (built per-run from
-#    workflow.smoke.md + WORKFLOW.workpad.example.md fragments — both the
-#    `agent.workpad` config block AND the prompt-template section that
-#    references {{ thread_id }}/prior_sessions are injected).
+#    workflow.smoke.md — the smoke file ships with `workpad: enabled: false`
+#    under SPEC §11.8.9 PR4 amendment, and this case flips that single line
+#    to `true`, expands the workpad block, and appends the prompt-template
+#    section that references {{ thread_id }}/prior_sessions).
 # 2. Create a fresh issue with AGENT PRIORITY INSTRUCTIONS to post a v1
 #    workpad comment containing the orchestrator-supplied {{ thread_id }},
 #    {{ model }}, etc.
@@ -62,21 +63,42 @@ sed -i.tmp -E \
   "$WORKFLOW"
 rm -f "$WORKFLOW.tmp"
 
-# Inject `workpad: enabled: true` under `agent:` and `model: "$MODEL"`
-# under `codex:`. We do this with awk so we can place the lines at the
-# correct indentation regardless of what the smoke file looked like.
+# Flip the smoke workflow's `workpad: enabled: false` → `enabled: true` AND
+# `session_summary: enabled: false` → `enabled: true` (SPEC §11.8.9 + 11.8.10
+# PR4 amendment: workflow.smoke.md ships with both explicitly disabled so
+# e2e-1..e2e-9 keep pre-PR4 behaviour). We also expand the workpad block
+# with `version`, `max_sessions_visible`, and `update_throttle_turns` to
+# make this case's intent explicit, and inject `model: "$MODEL"` under
+# `codex:`. Done with awk for indent-correct placement that survives smoke
+# YAML restructuring.
 awk -v model="$MODEL" '
-  BEGIN { injected_workpad = 0; injected_model = 0 }
-  /^agent:$/ { print; next }
-  /^codex:$/ {
-    if (!injected_workpad) {
-      print "  workpad:"
+  BEGIN {
+    in_workpad = 0; expanded_workpad = 0
+    in_summary = 0; flipped_summary = 0
+    injected_model = 0
+  }
+  /^  workpad:$/ { in_workpad = 1; in_summary = 0; print; next }
+  /^  session_summary:$/ { in_summary = 1; in_workpad = 0; print; next }
+  in_workpad && /^    enabled: false$/ {
+    if (!expanded_workpad) {
       print "    enabled: true"
       print "    version: v1"
       print "    max_sessions_visible: 20"
       print "    update_throttle_turns: 3"
-      injected_workpad = 1
+      expanded_workpad = 1
     }
+    next
+  }
+  in_summary && /^    enabled: false$/ {
+    if (!flipped_summary) {
+      print "    enabled: true"
+      print "    version: v1"
+      flipped_summary = 1
+    }
+    next
+  }
+  (in_workpad || in_summary) && /^[^ ]/ { in_workpad = 0; in_summary = 0 }
+  /^codex:$/ {
     print
     print "  model: \"" model "\""
     injected_model = 1
@@ -119,6 +141,8 @@ grep -q "^  model: \"$MODEL\"\$" "$WORKFLOW" || e2e::verdict_fail \
   "WORKFLOW augmentation failed: codex.model not injected"
 grep -q "Agent Workpad Protocol (SPEC §11.8)" "$WORKFLOW" || e2e::verdict_fail \
   "WORKFLOW augmentation failed: workpad prompt section not appended"
+grep -q '^  session_summary:$' "$WORKFLOW" || e2e::verdict_fail \
+  "WORKFLOW augmentation failed: session_summary: block not injected (smoke YAML changed?)"
 
 ORCH_LOG="$E2E_LOG_DIR/run.log"
 e2e::start_orchestrator "$ORCH_LOG"
@@ -139,11 +163,13 @@ read -r ISSUE_NUM ISSUE_NODE_ID < <(e2e::create_test_issue "[smoke] E2E-10 workp
 # is told to use the orchestrator-supplied {{ thread_id }} verbatim; if it
 # writes `unknown` instead, that is a §11.8.8 truthfulness violation that
 # the orchestrator-log cross-check below will catch.
-BODY="Smoke test. AGENT PRIORITY INSTRUCTION: Post a single comment to this issue via the github_graphql tool. The comment body MUST begin with the line:
+BODY="Smoke test. AGENT PRIORITY INSTRUCTION: Post TWO comments to this issue via the github_graphql tool, in order.
+
+(1) WORKPAD COMMENT — body MUST begin with the line:
 
 <!-- symphony-workpad:v1 -->
 
-and include a sessions table row containing the orchestrator-provided thread_id, dispatched_at, and model values from your prompt context. After posting the comment, end the turn immediately. Do not make code changes. Use this exact mutation shape (substitute real values):
+and include a sessions table row containing the orchestrator-provided thread_id, dispatched_at, and model values from your prompt context. Use this exact mutation shape (substitute real values):
 
 \`\`\`
 mutation {
@@ -152,7 +178,17 @@ mutation {
     body:\"<!-- symphony-workpad:v1 -->\\n| thread_id | attempt | dispatched_at | model |\\n|---|---|---|---|\\n| <THREAD_ID> | <ATTEMPT> | <DISPATCHED_AT> | <MODEL> |\\n<!-- /symphony-workpad:v1 -->\"
   }) { commentEdge { node { id } } }
 }
-\`\`\`"
+\`\`\`
+
+(2) SESSION-SUMMARY COMMENT (SPEC §11.8.10) — second addComment with a body that BEGINS with the marker line:
+
+<!-- symphony-session-summary:<THREAD_ID>:v1 -->
+
+(substituting the orchestrator-supplied thread_id verbatim), followed by Session/Attempt/Dispatched/Completed/Duration/Model/Stop reason header lines, then a one-line summary, and ending with:
+
+<!-- /symphony-session-summary:<THREAD_ID>:v1 -->
+
+After both comments are posted, end the turn immediately. Do not make code changes."
 gh issue edit "$ISSUE_NUM" -R "$SYMPHONY_E2E_PROJECT_OWNER/$SYMPHONY_E2E_REPO" --body "$BODY" >/dev/null
 
 ITEM_ID=$(e2e::add_to_project "$ISSUE_NODE_ID")
@@ -182,6 +218,29 @@ if [[ -z "$marker_body" ]]; then
 fi
 
 echo "first_workpad_body_head=$(printf '%s' "$marker_body" | awk 'NR==1{printf "%.200s", $0; exit}')"
+
+# SPEC §11.8.10: assert a session-summary comment lands on the issue
+# alongside the workpad. The marker shape is
+# `<!-- symphony-session-summary:<thread_id>:v1 -->`; since we don't know
+# the thread_id at this point (it's extracted from symphony.log below), we
+# match the marker prefix only.
+summary_elapsed=0
+summary_body=""
+while (( summary_elapsed < 60 )); do
+  comments_json=$(gh issue view "$ISSUE_NUM" -R "$SYMPHONY_E2E_PROJECT_OWNER/$SYMPHONY_E2E_REPO" --json comments 2>/dev/null || echo '{}')
+  summary_body=$(jq -r '.comments[]?.body | select(. != null) | select(contains("<!-- symphony-session-summary:"))' <<<"$comments_json" | awk 'NR==1{print; exit}')
+  if [[ -n "$summary_body" ]]; then
+    break
+  fi
+  sleep 5
+  (( summary_elapsed+=5 ))
+done
+
+if [[ -z "$summary_body" ]]; then
+  e2e::verdict_partial "no symphony-session-summary marker on issue within 60s — agent did not post §11.8.10 audit comment. Likely smoke-mode model ignored the second instruction."
+else
+  echo "first_session_summary_head=$(printf '%s' "$summary_body" | awk 'NR==1{printf "%.200s", $0; exit}')"
+fi
 
 # Wait for first turn to exit cleanly.
 e2e::wait_for_log_line "worker stop reason=:agent_exit_normal issue_id=\"$ITEM_ID\"" 60 || \
@@ -326,7 +385,7 @@ while (( prompt_wait < 30 )); do
 done
 
 # The second dispatch's prompt MUST contain the first session's thread_id
-# rendered under `Prior sessions` — see WORKFLOW.workpad.example.md:164:
+# rendered under `Prior sessions` — see elixir/WORKFLOW.md "Prior sessions"
 #   - `{{ s.thread_id }}` attempt={{ s.attempt }} ...
 # After Solid render, the literal token is the bare UUIDv7 (no backticks
 # inside JSON because the rollout stores the rendered text in

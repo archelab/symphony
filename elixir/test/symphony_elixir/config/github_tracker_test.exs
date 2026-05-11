@@ -3,6 +3,27 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
 
   alias SymphonyElixir.Config.Schema
 
+  # SPEC §11.8.9 + §11.8.10 PR4 amendment: both `agent.workpad.enabled` AND
+  # `agent.session_summary.enabled` default to `true`, each forcing its own
+  # cross-validation (requires `codex.model`). These tracker-focused tests
+  # pre-date both features and assert behaviors orthogonal to them, so we
+  # explicitly opt out of BOTH here. Workpad behavior is exercised in
+  # `Config.WorkpadTest`; session-summary behavior in
+  # `Config.SessionSummaryTest`.
+  defp parse(config) do
+    agent = Map.get(config, "agent", %{})
+    workpad = Map.merge(%{"enabled" => false}, Map.get(agent, "workpad", %{}))
+    summary = Map.merge(%{"enabled" => false}, Map.get(agent, "session_summary", %{}))
+
+    Schema.parse(
+      Map.put(
+        config,
+        "agent",
+        agent |> Map.put("workpad", workpad) |> Map.put("session_summary", summary)
+      )
+    )
+  end
+
   test "parses a minimal GitHub tracker config" do
     config = %{
       "tracker" => %{
@@ -15,7 +36,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       }
     }
 
-    assert {:ok, settings} = Schema.parse(config)
+    assert {:ok, settings} = parse(config)
     assert settings.tracker.kind == "github"
     assert settings.tracker.endpoint == "https://api.github.com/graphql"
     assert settings.tracker.api_token == "ghp_test"
@@ -52,7 +73,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       }
     }
 
-    assert {:ok, settings} = Schema.parse(config)
+    assert {:ok, settings} = parse(config)
     assert settings.tracker.api_token == "ghp_resolved"
   end
 
@@ -65,7 +86,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       }
     }
 
-    assert {:ok, settings} = Schema.parse(config)
+    assert {:ok, settings} = parse(config)
     assert settings.tracker.project_id == "PVT_kwDODDTPxM4BXSCK"
     assert settings.tracker.project_number == nil
   end
@@ -79,7 +100,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       }
     }
 
-    assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
+    assert {:error, {:invalid_workflow_config, message}} = parse(config)
     assert message =~ "project_id"
   end
 
@@ -94,7 +115,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       }
     }
 
-    assert {:error, {:invalid_workflow_config, _}} = Schema.parse(config)
+    assert {:error, {:invalid_workflow_config, _}} = parse(config)
   end
 
   test "rejects unknown tracker kind with unsupported_tracker_kind" do
@@ -108,7 +129,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       }
     }
 
-    assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
+    assert {:error, {:invalid_workflow_config, message}} = parse(config)
     assert message =~ "unsupported_tracker_kind"
   end
 
@@ -122,7 +143,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       }
     }
 
-    assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
+    assert {:error, {:invalid_workflow_config, message}} = parse(config)
     assert message =~ "missing_tracker_api_token"
   end
 
@@ -146,7 +167,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       }
     }
 
-    assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
+    assert {:error, {:invalid_workflow_config, message}} = parse(config)
     assert message =~ "missing_tracker_api_token"
   end
 
@@ -156,7 +177,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       "server" => %{"port" => 4001, "host" => "0.0.0.0"}
     }
 
-    assert {:ok, settings} = Schema.parse(config)
+    assert {:ok, settings} = parse(config)
     assert settings.server.port == 4001
     assert settings.server.host == "0.0.0.0"
   end
@@ -167,7 +188,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       "server" => %{"port" => -1}
     }
 
-    assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
+    assert {:error, {:invalid_workflow_config, message}} = parse(config)
     assert message =~ "server.port"
   end
 
@@ -190,12 +211,12 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       "workspace" => %{"root" => "$#{missing_env}"}
     }
 
-    assert {:ok, settings} = Schema.parse(config)
+    assert {:ok, settings} = parse(config)
     assert settings.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
 
     # `""` branch — empty string passed explicitly
     assert {:ok, settings} =
-             Schema.parse(%{
+             parse(%{
                "tracker" => github_tracker_attrs(),
                "workspace" => %{"root" => ""}
              })
@@ -209,7 +230,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       "workspace" => %{"root" => "$!!invalid_env_ref"}
     }
 
-    assert {:ok, settings} = Schema.parse(config)
+    assert {:ok, settings} = parse(config)
     assert settings.workspace.root == "$!!invalid_env_ref"
   end
 
@@ -230,7 +251,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       "workspace" => %{"root" => "$#{set_env}"}
     }
 
-    assert {:ok, settings} = Schema.parse(config)
+    assert {:ok, settings} = parse(config)
     assert settings.workspace.root == "/tmp/symphony-resolved-workspace"
   end
 
@@ -258,7 +279,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
       "tracker" => Map.merge(github_tracker_attrs(), %{"api_token" => "$#{missing_env}"})
     }
 
-    assert {:ok, settings} = Schema.parse(config)
+    assert {:ok, settings} = parse(config)
     assert settings.tracker.api_token == "ghp_fallback_token"
   end
 
@@ -278,7 +299,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
     # normalize_secret_value clause.
     config = %{"tracker" => %{"kind" => "memory"}}
 
-    assert {:ok, settings} = Schema.parse(config)
+    assert {:ok, settings} = parse(config)
     assert settings.tracker.api_token == nil
   end
 
@@ -299,7 +320,7 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
     }
 
     # Empty env value resolves to nil → triggers missing_tracker_api_token.
-    assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
+    assert {:error, {:invalid_workflow_config, message}} = parse(config)
     assert message =~ "missing_tracker_api_token"
   end
 

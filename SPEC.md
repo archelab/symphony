@@ -2358,23 +2358,30 @@ Implementations MUST:
 
 #### 11.8.9 Configuration
 
-Workflows opt into the workpad protocol via the `agent.workpad` config block:
+Workflows configure the workpad protocol via the `agent.workpad` config block:
 
 ```yaml
 agent:
   workpad:
-    enabled: true               # default: false (back-compat)
+    enabled: true               # default: true (PR4 amendment)
     version: v1                 # MUST equal the marker version; only "v1" supported in this spec
     max_sessions_visible: 20    # rows before folding, default 20
     update_throttle_turns: 3    # min turns between updateIssueComment calls, default 3
 ```
 
-`agent.workpad.enabled: false` (the default) means the orchestrator MUST NOT
-emit the `thread_id`, `dispatched_at`, `model`, `subject_id`, or
-`prior_sessions` prompt variables, and the workflow template MUST NOT reference
-them. This preserves backward compatibility with workflows written before the
-protocol existed: any existing template that does not mention the variables
-renders identically to its pre-§11.8 behavior.
+`agent.workpad.enabled: true` (the default) means the orchestrator emits the
+five workpad prompt variables (`thread_id`, `dispatched_at`, `model`,
+`subject_id`, `prior_sessions`) whenever the dispatched item is an Issue or
+PullRequest, and the workflow template MUST reference at least one of those
+variables so the workpad bridge actually surfaces to the agent. The default
+flip pushes the protocol from opt-in to opt-out: implementations adopting the
+PR4 amendment expose the workpad to every dispatched session unless the
+operator explicitly opts out.
+
+`agent.workpad.enabled: false` means the orchestrator MUST NOT emit any of
+the five variables, and the workflow template MUST NOT reference them. Solid
+strict mode then rejects any template referencing them, surfacing the half-
+flipped config to the operator at boot time.
 
 `agent.workpad.version` MUST match the version embedded in the workpad marker
 (`<!-- symphony-workpad:v1 -->`). A future v2 protocol MUST bump both the
@@ -2384,8 +2391,124 @@ to read or write.
 
 `agent.workpad.enabled: true` requires the workflow template to include the
 agent-facing protocol instructions described in Section 11.8.3 (or equivalent
-prose). Implementations SHOULD ship a reference template snippet that operators
-can paste into their `WORKFLOW.md`.
+prose). Implementations SHOULD ship a reference `WORKFLOW.md` that satisfies
+this contract out of the box — operators copying the stock template into their
+repo SHOULD get a working workpad with no further wiring.
+
+**Migrating to default-on (PR4 amendment).** Deployments upgrading from an
+implementation that defaulted `enabled` to `false` (the original §11.8.9
+back-compat default) MUST take one of two paths on a pre-existing
+`WORKFLOW.md`:
+
+1. **Opt out explicitly.** Set `agent.workpad.enabled: false` in the existing
+   `WORKFLOW.md` front matter. The orchestrator preserves pre-PR4 behavior and
+   does not emit the five prompt variables.
+
+2. **Adopt the default-on protocol.** Add the `agent.workpad` block (any non-
+   `false` `enabled` value, or omit the block to inherit the on-default), add
+   `codex.model` (required by SPEC §11.8.5 cross-validation), and include the
+   §11.8.3 prompt prose in the body so `validate_workpad_template/1` (SPEC
+   §11.8.9) sees at least one workpad Liquid variable. Implementations MUST
+   refuse boot when this contract is partially satisfied (workpad implicitly
+   enabled via default + missing `codex.model`, or workpad-enabled config +
+   workpad-less prompt) so the migration step surfaces loud rather than
+   producing protocol-less prompts at runtime.
+
+The migration is intentionally breaking: a stock pre-PR3 `WORKFLOW.md` that
+neither opts out nor adopts the protocol fails boot until the operator picks
+a path.
+
+#### 11.8.10 Per-Session Summary Comments
+
+The workpad (Section 11.8.1) is a mutable, single-comment surface that the
+agent updates across sessions. The per-session summary protocol is a
+complementary append-only audit trail: every dispatched session, on its
+final turn, posts a NEW comment on the underlying Issue/PullRequest
+carrying that session's lifecycle metadata. Future operators reconstruct
+the dispatch history by grepping the comment stream — no need to join
+against orchestrator logs.
+
+The summary protocol is **independent** of the workpad protocol.
+Implementations MAY ship one without the other; the configuration flags
+(`agent.workpad.enabled`, `agent.session_summary.enabled`) are orthogonal.
+A deployment can opt into summary-only (no workpad), workpad-only (no
+summary), both, or neither.
+
+**Marker shape.** Each summary comment is fenced by an opening and a
+closing HTML-comment marker that embed the session's `thread_id` verbatim:
+
+```
+<!-- symphony-session-summary:<thread_id>:<version> --> ... <!-- /symphony-session-summary:<thread_id>:<version> -->
+```
+
+The `thread_id` scoping is intentional: with N prior sessions, an
+Issue/PullRequest carries N uniquely-addressable summary comments.
+Implementations MUST use the `thread_id` value the orchestrator supplied
+to the prompt (Section 11.8.5); fabricated thread_ids violate the §11.8.8
+truthfulness contract.
+
+**Header block.** Immediately after the opening marker, the body MUST
+include the following RFC822-style key:value pairs, one per line, in
+this order:
+
+```
+Session: <thread_id>
+Attempt: <N>
+Dispatched: <RFC3339 UTC>
+Completed: <RFC3339 UTC>
+Duration: <H>h<M>m<S>s
+Model: <model identifier>
+Stop reason: <§13.1 atom without the leading colon>
+```
+
+The `Model:` value MUST match `codex.model`; the `Stop reason:` value MUST
+come from the §13.1 worker-stop reason vocabulary. Implementations
+deriving these fields from agent self-report SHOULD cross-check against
+orchestrator state and surface a divergence warning.
+
+**Freeform body.** After a blank line, 3–10 sentences summarizing the
+session's goal, plan, key actions, code references, and open questions.
+Bullet points and links to PRs/commits are encouraged.
+
+**Posting.** Submitted via `addComment(input: {subjectId: $subject_id,
+body: $body})` on the agent's final turn, AFTER the workpad sessions
+table update (if the workpad is also enabled). `addComment` is on the
+default mutation allowlist (Section 18.2.1).
+
+**Append-only.** Implementations MUST NOT edit or delete a prior
+session's summary comment. The §11.8.10 audit trail is the permanent
+record of every dispatch; corrections live in the NEXT session's summary
+comment, not by overwriting an old one. This rule is enforced by spec
+convention rather than by allowlist — `updateIssueComment` IS on the
+allowlist when the workpad protocol is also enabled (Section 11.8.4), but
+agents MUST NOT use it on session-summary comments.
+
+**Configuration.**
+
+```yaml
+agent:
+  session_summary:
+    enabled: true               # default: true (PR4 amendment)
+    version: v1                 # MUST equal the marker version; only "v1" supported in this spec
+```
+
+`agent.session_summary.enabled: true` (the default) requires:
+
+1. `codex.model` MUST be set, mirroring the workpad's §11.8.5
+   cross-validation. The `Model:` header field cannot be empty.
+2. The workflow prompt template MUST reference at least one of
+   `{{ thread_id }}`, `{{ subject_id }}`, or `{{ dispatched_at }}` so
+   the agent's rendered prompt actually carries per-session identity.
+   The validation runs independently of the workpad's analogous check.
+
+`agent.session_summary.enabled: false` disables the protocol entirely:
+the agent SHOULD NOT post summary comments, and the cross-validations
+above do not fire. Operators opting out of the summary while keeping the
+workpad enabled MAY rely on the workpad's mutable sessions table as
+their session-history surface.
+
+**Version.** `agent.session_summary.version` MUST match the version
+embedded in the markers. The current spec defines only `v1`.
 
 ## 12. Prompt Construction and Context Assembly
 
@@ -3444,6 +3567,36 @@ Required when `agent.workpad.enabled: true` (Section 11.8.9):
   round-trip test: orchestrator dispatch → prompt render → simulated agent comment
   containing the marker → orchestrator re-dispatch → prior_sessions reflects the
   prior run.
+
+Required when `agent.session_summary.enabled: true` (Section 11.8.10):
+
+- When `agent.session_summary.enabled: false`, the boot-time template
+  validation MUST NOT fire and a prompt with zero references to
+  `thread_id` / `subject_id` / `dispatched_at` MUST load successfully.
+- When `agent.session_summary.enabled: true`, the workflow prompt template
+  MUST reference at least one of `{{ thread_id }}`, `{{ subject_id }}`,
+  `{{ dispatched_at }}`. A template referencing none MUST fail load with
+  an error referencing `§11.8.10`.
+- When `agent.session_summary.enabled: true` AND `codex.model` is unset,
+  Schema validation MUST refuse boot with an error referencing
+  `§11.8.10` and `codex.model`.
+- The session-summary marker MUST embed the session's `thread_id` verbatim
+  (e.g. `<!-- symphony-session-summary:thr-abc:v1 -->`), distinguishing
+  it from the singleton workpad marker. A test that posts a comment with
+  the canonical marker MUST be able to round-trip it via the
+  `github_graphql` `addComment` mutation and locate it in a subsequent
+  comment query.
+- The session-summary header block MUST surface the seven RFC822 fields
+  (`Session`, `Attempt`, `Dispatched`, `Completed`, `Duration`, `Model`,
+  `Stop reason`) in render order. Implementations MUST expose this set
+  programmatically (e.g. `Workpad.Protocol.session_summary_header_fields/0`)
+  so templates and audit tooling never duplicate the contract.
+- Session-summary comments are append-only by spec convention: a test
+  that attempts to use `updateIssueComment` on a prior summary comment
+  body MUST be a flagged violation. The allowlist itself does not
+  enforce append-only — `updateIssueComment` is enabled when the workpad
+  protocol is also on — so implementations SHOULD document the
+  convention in their `WORKFLOW.md` template.
 
 ### 17.9 Real Integration Profile (RECOMMENDED)
 

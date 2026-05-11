@@ -7,6 +7,16 @@ defmodule SymphonyElixir.Workflow do
 
   @workflow_file_name "WORKFLOW.md"
 
+  # SPEC §11.8.10: the per-session summary header carries Session,
+  # Dispatched, and (via the marker) a thread_id. A workflow that opts into
+  # session-summary comments MUST reference at least one of these so the
+  # agent's rendered prompt actually carries per-session identity. The
+  # workpad's `model` and `prior_sessions` vars are intentionally NOT on
+  # this list — a workpad-disabled, summary-enabled deployment must still
+  # satisfy this validation, and `model` lives only in the workpad context
+  # map.
+  @session_summary_required_template_vars ~w(thread_id subject_id dispatched_at)
+
   @spec workflow_file_path() :: Path.t()
   def workflow_file_path do
     Application.get_env(:symphony_elixir, :workflow_file_path) ||
@@ -73,9 +83,9 @@ defmodule SymphonyElixir.Workflow do
           prompt_template: prompt
         }
 
-        case validate_workpad_template(loaded) do
-          :ok -> {:ok, loaded}
-          {:error, _reason} = error -> error
+        with :ok <- validate_workpad_template(loaded),
+             :ok <- validate_session_summary_template(loaded) do
+          {:ok, loaded}
         end
 
       {:error, :workflow_front_matter_not_a_map} ->
@@ -112,8 +122,45 @@ defmodule SymphonyElixir.Workflow do
     end
   end
 
-  defp workpad_enabled?(%{"agent" => %{"workpad" => %{"enabled" => true}}}), do: true
-  defp workpad_enabled?(_), do: false
+  # SPEC §11.8.9 (PR4 amendment): workpad defaults to enabled. The validation
+  # fires whenever the operator has NOT explicitly opted out via
+  # `agent.workpad.enabled: false`, mirroring `Config.Schema.Agent.Workpad`'s
+  # `default: true`. Pre-PR3 templates without a workpad block (and without a
+  # workpad section in the prompt) hit this branch and fail loud at boot —
+  # exactly the migration signal documented in the SPEC's "Migrating to
+  # default-on" note.
+  defp workpad_enabled?(%{"agent" => %{"workpad" => %{"enabled" => false}}}), do: false
+  defp workpad_enabled?(_), do: true
+
+  # SPEC §11.8.10: a workflow whose front matter opts INTO session-summary
+  # comments (the default — `agent.session_summary.enabled: true`) MUST have
+  # a prompt template that references at least one of `thread_id`,
+  # `subject_id`, or `dispatched_at`. Without those bindings the agent's
+  # rendered prompt would carry no per-session identity and the audit
+  # comment's marker would be `<!-- symphony-session-summary::v1 -->`. Same
+  # fail-loud philosophy as `validate_workpad_template/1`.
+  defp validate_session_summary_template(%{config: config, prompt_template: prompt})
+       when is_binary(prompt) do
+    if session_summary_enabled?(config) do
+      vars = @session_summary_required_template_vars
+
+      if Enum.any?(vars, &template_references_var?(prompt, &1)) do
+        :ok
+      else
+        {:error,
+         {:invalid_workflow_config,
+          "agent.session_summary.enabled: true requires the workflow prompt template to reference at least one of: " <>
+            Enum.join(vars, ", ") <> " (SPEC §11.8.10)"}}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp session_summary_enabled?(%{"agent" => %{"session_summary" => %{"enabled" => false}}}),
+    do: false
+
+  defp session_summary_enabled?(_), do: true
 
   # Match Liquid output tags (`{{ … }}`) and control-flow tags (`{% … %}`).
   # `\b` plus `Regex.escape/1` keep the match anchored to the literal variable

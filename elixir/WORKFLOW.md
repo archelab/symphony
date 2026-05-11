@@ -27,8 +27,14 @@ hooks:
 agent:
   max_concurrent_agents: 4
   max_turns: 20
+  workpad:
+    enabled: true
+    version: v1
+    max_sessions_visible: 20
+    update_throttle_turns: 3
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
+  model: "gpt-5.5"
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -127,6 +133,77 @@ Open work on a feature branch and submit a Pull Request against
 Both `pr.base_ref_name` and `repository.default_branch` come straight from
 GitHub via the candidate query, so this guidance updates automatically if
 the protected branch changes upstream.
+
+<!-- The markers below MUST stay in lock-step with SymphonyElixir.Workpad.Protocol.marker_open/marker_close. -->
+
+## Agent Workpad Protocol (SPEC §11.8)
+
+You have a cross-session workpad — a single GitHub Issue/PullRequest comment
+identified by an HTML marker. Manage it via the `github_graphql` tool.
+
+**Find or create the workpad:**
+
+1. Query comments on the underlying {{ issue.kind }} (subject_id `{{ subject_id }}`),
+   paginating with `comments(first: 100, after: $cursor)` until you find a comment
+   whose trimmed body starts with `<!-- symphony-workpad:v1 -->` OR `pageInfo.hasNextPage`
+   is false.
+2. If no match: post a new workpad with `addComment(input: { subjectId: "{{ subject_id }}", body: $body })`.
+3. If exactly one match: capture its node id and use `updateIssueComment(input: { id: $node_id, body: $body })`.
+4. If multiple matches: operate on the newest by `(createdAt DESC, databaseId DESC)`.
+
+The comment body MUST begin with `<!-- symphony-workpad:v1 -->` and end with
+`<!-- /symphony-workpad:v1 -->` so future dispatches can find it.
+
+**On first turn, append your row to the sessions table:**
+
+| `{{ thread_id }}` | {{ attempt }} | {{ dispatched_at }} | — | — | {{ model }} | — |
+
+{% if prior_sessions %}
+**Prior sessions** (most recent first; orchestrator-authoritative — do not invent values):
+
+{% for s in prior_sessions %}
+- `{{ s.thread_id }}` attempt={{ s.attempt }} dispatched={{ s.dispatched_at }} completed={{ s.completed_at }} duration_ms={{ s.duration_ms }} model={{ s.model }} stop_reason={{ s.stop_reason }}
+{% endfor %}
+{% endif %}
+
+On voluntary final-turn completion: update your row's Ended/Duration/Stop reason
+(use `agent_exit_normal` unless you know otherwise) AND archive your "Current session"
+body under a `### Session {{ thread_id }} notes` heading.
+
+**Rate-limit handling (SPEC §11.8.6):** the workpad is best-effort. If `addComment` or
+`updateIssueComment` returns a secondary-throttle `Retry-After` header, honour it and
+SKIP the workpad write for the current turn rather than retrying in a tight loop. On
+primary-quota exhaustion (`rateLimit.resetAt`), wait for reset before the next attempt.
+The orchestrator's §13.1 structured logs remain the authoritative session record while
+the workpad is unwritable.
+
+## Per-session summary (SPEC §11.8.10)
+
+On your FINAL turn before voluntary completion (AFTER updating the workpad sessions
+table), post a NEW comment via `github_graphql.addComment(input: {subjectId:
+"{{ subject_id }}", body: $body})` with this exact shape:
+
+```
+<!-- symphony-session-summary:{{ thread_id }}:v1 -->
+Session: {{ thread_id }}
+Attempt: {{ attempt }}
+Dispatched: {{ dispatched_at }}
+Completed: <fill in with wall-clock UTC at final-turn time>
+Duration: <H>h<M>m<S>s
+Model: {{ model }}
+Stop reason: agent_exit_normal
+
+<Freeform summary: 3–10 sentences. Goal, plan, key actions taken, code references,
+open questions. Bullet points and links to PRs/commits are encouraged.>
+<!-- /symphony-session-summary:{{ thread_id }}:v1 -->
+```
+
+The marker embeds `{{ thread_id }}` so each session has a uniquely-addressable audit
+comment that future operators can grep without joining against orchestrator logs.
+
+**Append-only.** Do NOT edit or delete any prior session-summary comment. The §11.8.10
+audit trail is the permanent record of every dispatch; corrections go in a NEW summary
+comment on the next session, not by overwriting an old one.
 
 ## Stopping conditions
 

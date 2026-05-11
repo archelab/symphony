@@ -3,6 +3,10 @@ defmodule SymphonyElixir.Config.WorkpadTest do
 
   alias SymphonyElixir.Config.Schema
 
+  # SPEC §11.8.10 PR4: `agent.session_summary.enabled` ALSO defaults to true
+  # and forces its own `codex.model` cross-validation. These tests focus on
+  # the workpad block — opt out of session-summary so the assertions stay
+  # narrow. Tests in `Config.SessionSummaryTest` cover the summary side.
   defp parse(attrs) do
     base = %{
       "tracker" => %{
@@ -14,18 +18,34 @@ defmodule SymphonyElixir.Config.WorkpadTest do
       }
     }
 
-    Schema.parse(Map.merge(base, attrs))
+    merged = Map.merge(base, attrs)
+    agent = Map.get(merged, "agent", %{})
+
+    summary_opt_out =
+      Map.merge(%{"enabled" => false}, Map.get(agent, "session_summary", %{}))
+
+    Schema.parse(Map.put(merged, "agent", Map.put(agent, "session_summary", summary_opt_out)))
   end
 
-  test "agent.workpad defaults to disabled" do
-    assert {:ok, settings} = parse(%{})
-    assert settings.agent.workpad.enabled == false
+  test "agent.workpad defaults to enabled (SPEC §11.8.9 PR4 amendment)" do
+    # `codex.model` MUST be set when the workpad is enabled (SPEC §11.8.5
+    # cross-validation). Supply it so the test asserts the *default flip*,
+    # not the cross-validation (which has its own dedicated test below).
+    assert {:ok, settings} = parse(%{"codex" => %{"model" => "gpt-5.5"}})
+
+    assert settings.agent.workpad.enabled == true
     assert settings.agent.workpad.version == "v1"
     assert settings.agent.workpad.max_sessions_visible == 20
     assert settings.agent.workpad.update_throttle_turns == 3
   end
 
-  test "agent.workpad accepts enabled override (with codex.model per SPEC §11.8.5)" do
+  test "agent.workpad accepts explicit enabled: false (opt-out from PR4 default-on)" do
+    assert {:ok, settings} = parse(%{"agent" => %{"workpad" => %{"enabled" => false}}})
+
+    assert settings.agent.workpad.enabled == false
+  end
+
+  test "agent.workpad accepts explicit enabled: true (with codex.model per SPEC §11.8.5)" do
     assert {:ok, settings} =
              parse(%{
                "agent" => %{"workpad" => %{"enabled" => true}},
@@ -40,6 +60,7 @@ defmodule SymphonyElixir.Config.WorkpadTest do
              parse(%{
                "agent" => %{
                  "workpad" => %{
+                   "enabled" => false,
                    "max_sessions_visible" => 5,
                    "update_throttle_turns" => 0
                  }
@@ -52,28 +73,43 @@ defmodule SymphonyElixir.Config.WorkpadTest do
 
   test "agent.workpad rejects unknown version" do
     assert {:error, {:invalid_workflow_config, msg}} =
-             parse(%{"agent" => %{"workpad" => %{"version" => "v99"}}})
+             parse(%{
+               "agent" => %{"workpad" => %{"enabled" => false, "version" => "v99"}}
+             })
 
     assert msg =~ "workpad.version"
   end
 
   test "agent.workpad rejects non-positive max_sessions_visible" do
     assert {:error, {:invalid_workflow_config, _msg}} =
-             parse(%{"agent" => %{"workpad" => %{"max_sessions_visible" => 0}}})
+             parse(%{
+               "agent" => %{"workpad" => %{"enabled" => false, "max_sessions_visible" => 0}}
+             })
   end
 
   test "agent.workpad rejects negative update_throttle_turns" do
     assert {:error, {:invalid_workflow_config, _msg}} =
-             parse(%{"agent" => %{"workpad" => %{"update_throttle_turns" => -1}}})
+             parse(%{
+               "agent" => %{"workpad" => %{"enabled" => false, "update_throttle_turns" => -1}}
+             })
   end
 
   test "codex.model defaults to nil" do
-    assert {:ok, settings} = parse(%{})
+    # Pair with explicit `enabled: false` so the workpad cross-validation
+    # does not fire (its own dedicated test below).
+    assert {:ok, settings} =
+             parse(%{"agent" => %{"workpad" => %{"enabled" => false}}})
+
     assert settings.codex.model == nil
   end
 
   test "codex.model accepts an explicit string" do
-    assert {:ok, settings} = parse(%{"codex" => %{"model" => "gpt-5.5"}})
+    assert {:ok, settings} =
+             parse(%{
+               "agent" => %{"workpad" => %{"enabled" => false}},
+               "codex" => %{"model" => "gpt-5.5"}
+             })
+
     assert settings.codex.model == "gpt-5.5"
   end
 
@@ -94,5 +130,18 @@ defmodule SymphonyElixir.Config.WorkpadTest do
 
     assert settings.agent.workpad.enabled == true
     assert settings.codex.model == "gpt-5.5"
+  end
+
+  test "schema-default enabled: true without codex.model fires cross-validation (PR4 migration gate)" do
+    # SPEC §11.8.9 migration: a pre-PR3 workflow with no `agent.workpad`
+    # block AND no `codex.model` would now silently inherit the default-on
+    # workpad config. We MUST refuse boot rather than render workpad rows
+    # with an empty `model` cell. This regression-tests the chained
+    # validation: schema default applies → cross-validation fires →
+    # operator sees the migration message.
+    assert {:error, {:invalid_workflow_config, msg}} = parse(%{})
+
+    assert msg =~ "codex.model"
+    assert msg =~ "§11.8.5"
   end
 end
