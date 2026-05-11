@@ -920,12 +920,16 @@ defmodule SymphonyElixir.Orchestrator do
     started_at = DateTime.utc_now()
     dispatched_at = DateTime.to_iso8601(started_at)
     model = codex_model_snapshot()
+    prior_sessions = Map.get(state.completed, issue.id, [])
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient,
              attempt: attempt,
              worker_host: worker_host,
-             last_run_completed_at: last_run_completed_at
+             last_run_completed_at: last_run_completed_at,
+             prior_sessions: prior_sessions,
+             dispatched_at: dispatched_at,
+             model: model
            )
          end) do
       {:ok, pid} ->

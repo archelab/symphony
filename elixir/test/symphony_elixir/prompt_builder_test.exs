@@ -2,6 +2,11 @@ defmodule SymphonyElixir.PromptBuilderTest do
   use SymphonyElixir.TestSupport
   alias SymphonyElixir.{Github.Issue, PromptBuilder}
 
+  defp enable_workpad! do
+    workflow_file = Application.get_env(:symphony_elixir, :workflow_file_path)
+    write_workflow_file!(workflow_file, agent_workpad_enabled: true, codex_model: "gpt-5.5")
+  end
+
   test "renders new domain shape including pr.* and last_run_completed_at" do
     issue =
       Issue.new(%{
@@ -54,8 +59,103 @@ defmodule SymphonyElixir.PromptBuilderTest do
     assert {:error, _} = PromptBuilder.render("{% if attempt", issue: sample_issue(), attempt: 1)
   end
 
-  defp sample_issue do
-    Issue.new(%{
+  describe "workpad variables (SPEC §11.8.5)" do
+    test "disabled + issue kind: strict mode rejects template referencing thread_id" do
+      issue = sample_issue(kind: "issue", content_id: "I_xyz")
+      template = "{{ thread_id }}"
+
+      assert {:error, _reason} =
+               PromptBuilder.render(template,
+                 issue: issue,
+                 attempt: 1,
+                 thread_id: "thr-1",
+                 dispatched_at: "2026-05-11T20:00:00Z",
+                 model: "gpt-5.5",
+                 prior_sessions: []
+               )
+    end
+
+    test "enabled + issue kind: all five vars present, prior_sessions renders" do
+      enable_workpad!()
+      issue = sample_issue(kind: "issue", content_id: "I_xyz")
+
+      template =
+        "thread={{ thread_id }} subject={{ subject_id }} model={{ model }} dispatched={{ dispatched_at }} prior_count={{ prior_sessions.size }} prior_thread={{ prior_sessions[0].thread_id }} prior_stop={{ prior_sessions[0].stop_reason }}"
+
+      prior = [
+        %{
+          thread_id: "thr-0",
+          attempt: 1,
+          dispatched_at: "2026-05-10T20:00:00Z",
+          completed_at: "2026-05-10T20:30:00Z",
+          duration_ms: 1_800_000,
+          # Cover nil pass-through (orchestrator may not always capture a model).
+          model: nil,
+          stop_reason: :agent_exit_normal
+        }
+      ]
+
+      assert {:ok, rendered} =
+               PromptBuilder.render(template,
+                 issue: issue,
+                 attempt: 2,
+                 thread_id: "thr-1",
+                 dispatched_at: "2026-05-11T20:00:00Z",
+                 model: "gpt-5.5",
+                 prior_sessions: prior
+               )
+
+      assert rendered =~ "thread=thr-1"
+      assert rendered =~ "subject=I_xyz"
+      assert rendered =~ "model=gpt-5.5"
+      assert rendered =~ "dispatched=2026-05-11T20:00:00Z"
+      assert rendered =~ "prior_count=1"
+      assert rendered =~ "prior_thread=thr-0"
+      assert rendered =~ "prior_stop=agent_exit_normal"
+    end
+
+    test "enabled + pull_request kind: subject_id surfaces PR content id" do
+      enable_workpad!()
+
+      issue =
+        sample_issue(
+          kind: "pull_request",
+          content_id: "PR_xyz",
+          pr: %{state: "OPEN", merged: false, is_draft: false, base_ref_name: "main"}
+        )
+
+      template = "{{ subject_id }}"
+
+      assert {:ok, "PR_xyz"} =
+               PromptBuilder.render(template,
+                 issue: issue,
+                 attempt: 1,
+                 thread_id: "thr-1",
+                 dispatched_at: "2026-05-11T20:00:00Z",
+                 model: "gpt-5.5",
+                 prior_sessions: []
+               )
+    end
+
+    test "enabled + draft_issue kind: workpad vars absent, strict rejects template" do
+      enable_workpad!()
+      issue = sample_issue(kind: "draft_issue", content_id: "DI_xyz")
+      template = "{{ thread_id }}"
+
+      assert {:error, _reason} =
+               PromptBuilder.render(template,
+                 issue: issue,
+                 attempt: 1,
+                 thread_id: "thr-1",
+                 dispatched_at: "2026-05-11T20:00:00Z",
+                 model: "gpt-5.5",
+                 prior_sessions: []
+               )
+    end
+  end
+
+  defp sample_issue(overrides \\ []) do
+    base = %{
       id: "PVTI_y",
       identifier: "archelab/symphony#1",
       kind: "issue",
@@ -66,6 +166,8 @@ defmodule SymphonyElixir.PromptBuilderTest do
       labels: [],
       blocked_by: [],
       issue_state: "OPEN"
-    })
+    }
+
+    Issue.new(Map.merge(base, Map.new(overrides)))
   end
 end

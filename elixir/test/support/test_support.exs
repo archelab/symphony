@@ -131,7 +131,12 @@ defmodule SymphonyElixir.TestSupport do
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
+          agent_workpad_enabled: nil,
+          agent_workpad_version: nil,
+          agent_workpad_max_sessions_visible: nil,
+          agent_workpad_update_throttle_turns: nil,
           codex_command: "codex app-server",
+          codex_model: nil,
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
           codex_turn_sandbox_policy: nil,
@@ -176,7 +181,12 @@ defmodule SymphonyElixir.TestSupport do
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
+    agent_workpad_enabled = Keyword.get(config, :agent_workpad_enabled)
+    agent_workpad_version = Keyword.get(config, :agent_workpad_version)
+    agent_workpad_max_sessions_visible = Keyword.get(config, :agent_workpad_max_sessions_visible)
+    agent_workpad_update_throttle_turns = Keyword.get(config, :agent_workpad_update_throttle_turns)
     codex_command = Keyword.get(config, :codex_command)
+    codex_model = Keyword.get(config, :codex_model)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
     codex_turn_sandbox_policy = Keyword.get(config, :codex_turn_sandbox_policy)
@@ -224,8 +234,15 @@ defmodule SymphonyElixir.TestSupport do
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
+        workpad_yaml(
+          agent_workpad_enabled,
+          agent_workpad_version,
+          agent_workpad_max_sessions_visible,
+          agent_workpad_update_throttle_turns
+        ),
         "codex:",
         "  command: #{yaml_value(codex_command)}",
+        optional_yaml("  model", codex_model),
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
         "  thread_sandbox: #{yaml_value(codex_thread_sandbox)}",
         "  turn_sandbox_policy: #{yaml_value(codex_turn_sandbox_policy)}",
@@ -319,6 +336,20 @@ defmodule SymphonyElixir.TestSupport do
 
   defp optional_yaml(_key, nil), do: nil
   defp optional_yaml(key, value), do: "#{key}: #{yaml_value(value)}"
+
+  defp workpad_yaml(nil, nil, nil, nil), do: nil
+
+  defp workpad_yaml(enabled, version, max_sessions_visible, update_throttle_turns) do
+    [
+      "  workpad:",
+      optional_yaml("    enabled", enabled),
+      optional_yaml("    version", version),
+      optional_yaml("    max_sessions_visible", max_sessions_visible),
+      optional_yaml("    update_throttle_turns", update_throttle_turns)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
 
   defp hook_entry(_name, nil), do: nil
 

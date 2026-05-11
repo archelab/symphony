@@ -82,9 +82,21 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
       send_thread_id(codex_update_recipient, issue, session)
+      # SPEC §11.8.5: thread_id MUST be captured before the first turn renders so
+      # the workpad sessions row references the same id the orchestrator records.
+      opts_with_thread = Keyword.put(opts, :thread_id, Map.get(session, :thread_id))
 
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_codex_turns(
+          session,
+          workspace,
+          issue,
+          codex_update_recipient,
+          opts_with_thread,
+          issue_state_fetcher,
+          1,
+          max_turns
+        )
       after
         AppServer.stop_session(session)
       end
