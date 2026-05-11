@@ -1,7 +1,8 @@
 defmodule SymphonyElixir.Codex.GithubGraphqlTool do
   @moduledoc """
   Codex dynamic tool registration for GitHub GraphQL access.
-  Spec §11.5 (agent-driven writes) and §18.2 (github_graphql extension).
+  Spec §11.5 (agent-driven writes), §11.8.4 (workpad append-only edits via
+  `updateIssueComment`), and §18.2 (github_graphql extension).
   """
 
   alias SymphonyElixir.{Config, Github.Client}
@@ -23,6 +24,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlTool do
 
   @default_mutation_allowlist ~w(
     addComment
+    updateIssueComment
     updateProjectV2ItemFieldValue
     addLabelsToLabelable
     removeLabelsFromLabelable

@@ -46,6 +46,35 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
              })
   end
 
+  test "allows updateIssueComment for workpad append-only edits (SPEC §11.8.4)" do
+    fake =
+      fn query, _v, _opts ->
+        assert query =~ "updateIssueComment"
+        {:ok, %{"data" => %{"updateIssueComment" => %{"issueComment" => %{"id" => "c1"}}}}}
+      end
+
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:ok, %{"data" => %{"updateIssueComment" => _}}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { updateIssueComment(input:{id:\"c1\", body:\"corrected\"}) { issueComment { id } } }",
+               "variables" => %{}
+             })
+  end
+
+  test "rejects deleteIssueComment — workpad is append-only at the row level (SPEC §11.8.4)" do
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:error, {:mutation_not_allowed, "deleteIssueComment"}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { deleteIssueComment(input:{id:\"c1\"}) { clientMutationId } }",
+               "variables" => %{}
+             })
+  end
+
   test "rejects multi-mutation document where any field is not allowlisted" do
     write_workflow_file!(Workflow.workflow_file_path())
 
