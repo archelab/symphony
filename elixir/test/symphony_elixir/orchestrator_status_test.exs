@@ -713,6 +713,119 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.codex_total_tokens == 0
   end
 
+  test "agent normal exit emits §13.1 structured log with reason :agent_exit_normal" do
+    issue_id = "issue-down-normal"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-DOWN-N",
+      title: "Down normal",
+      description: "Normal exit log",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-DOWN-N"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :DownNormalOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    process_ref = make_ref()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      issue_id: issue_id,
+      issue_identifier: issue.identifier,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-down-normal",
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    log =
+      capture_log(fn ->
+        send(pid, {:DOWN, process_ref, :process, self(), :normal})
+        # Force a synchronous call so the cast/info has been processed.
+        _ = GenServer.call(pid, :snapshot)
+      end)
+
+    assert log =~ "reason=:agent_exit_normal"
+    assert log =~ "issue_id=\"#{issue_id}\""
+    assert log =~ "issue_identifier=\"#{issue.identifier}\""
+    assert log =~ "session_id=\"thread-down-normal\""
+  end
+
+  test "agent crash exit emits §13.1 structured log with reason :agent_exit_crashed" do
+    issue_id = "issue-down-crash"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-DOWN-C",
+      title: "Down crash",
+      description: "Crash exit log",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-DOWN-C"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :DownCrashOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    process_ref = make_ref()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      issue_id: issue_id,
+      issue_identifier: issue.identifier,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-down-crash",
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    log =
+      capture_log(fn ->
+        send(pid, {:DOWN, process_ref, :process, self(), {:shutdown, :boom}})
+        _ = GenServer.call(pid, :snapshot)
+      end)
+
+    assert log =~ "reason=:agent_exit_crashed"
+    assert log =~ "issue_id=\"#{issue_id}\""
+    assert log =~ "issue_identifier=\"#{issue.identifier}\""
+    assert log =~ "session_id=\"thread-down-crash\""
+  end
+
   test "orchestrator snapshot includes retry backoff entries" do
     orchestrator_name = Module.concat(__MODULE__, :RetryOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)

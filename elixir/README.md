@@ -88,8 +88,13 @@ Minimal example:
 ```md
 ---
 tracker:
-  kind: linear
-  project_slug: "..."
+  kind: github
+  endpoint: https://api.github.com/graphql
+  api_token: ghp_xxx
+  owner: your-org
+  owner_type: organization
+  project_number: 1
+  repo: your-repo
 workspace:
   root: ~/code/workspaces
 hooks:
@@ -102,7 +107,7 @@ codex:
   command: codex app-server
 ---
 
-You are working on a Linear issue {{ issue.identifier }}.
+You are working on a GitHub Projects v2 item {{ issue.identifier }}.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```

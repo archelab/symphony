@@ -35,9 +35,9 @@ defmodule SymphonyElixir.CoreTest do
 
   test "workflow load accepts unterminated front matter with an empty prompt" do
     workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "UNTERMINATED_WORKFLOW.md")
-    File.write!(workflow_path, "---\ntracker:\n  kind: linear\n")
+    File.write!(workflow_path, "---\ntracker:\n  kind: memory\n")
 
-    assert {:ok, %{config: %{"tracker" => %{"kind" => "linear"}}, prompt: "", prompt_template: ""}} =
+    assert {:ok, %{config: %{"tracker" => %{"kind" => "memory"}}, prompt: "", prompt_template: ""}} =
              Workflow.load(workflow_path)
   end
 
@@ -922,6 +922,56 @@ defmodule SymphonyElixir.CoreTest do
 
       assert log =~ "reason=:dependencies_reopened"
       refute Map.has_key?(updated.running, "PVTI_y")
+    end
+
+    test "apply_reconcile_running/2 drives the production call path end-to-end" do
+      # Pin the production seam: reconcile_running_issues/1 ->
+      # apply_reconcile_running/2 -> reconcile_running/4. A refactor that
+      # bypasses apply_reconcile_running/2 would silently drop the
+      # :dependencies_reopened branch; this test fails loudly in that case.
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_active_states: ["In Progress"],
+        tracker_terminal_states: ["Done"],
+        tracker_dependency_gating_states: ["Agent Ready"],
+        tracker_gate_running_on_dependencies: true,
+        tracker_cross_repo_blockers: false
+      )
+
+      running_entry = %{
+        issue_id: "PVTI_e2e",
+        issue_identifier: "archelab/symphony#11",
+        identifier: "archelab/symphony#11",
+        session_id: "t-e2e",
+        pid: nil,
+        ref: nil,
+        started_at: DateTime.utc_now(),
+        blocked_by_snapshot: [
+          %{id: "B1", identifier: "archelab/symphony#12", state: "CLOSED"}
+        ]
+      }
+
+      state = %Orchestrator.State{
+        running: %{"PVTI_e2e" => running_entry},
+        claimed: MapSet.new(["PVTI_e2e"]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      refresh = [
+        %{
+          id: "PVTI_e2e",
+          state: "In Progress",
+          blocked_by: [%{id: "B1", identifier: "archelab/symphony#12", state: "OPEN"}]
+        }
+      ]
+
+      {updated, log} =
+        with_log(fn ->
+          Orchestrator.apply_reconcile_running_for_test(state, refresh)
+        end)
+
+      assert log =~ "reason=:dependencies_reopened"
+      refute Map.has_key?(updated.running, "PVTI_e2e")
     end
   end
 
