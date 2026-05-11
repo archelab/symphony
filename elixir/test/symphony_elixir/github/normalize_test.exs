@@ -244,6 +244,125 @@ defmodule SymphonyElixir.Github.NormalizeTest do
     assert {:ok, %Issue{repository: nil}} = Normalize.item(item, status_field: "Status")
   end
 
+  describe "blockers (sub-issues + tracked-issues)" do
+    # Spec §8.2.1: a parent issue gated by an open child via the new GitHub
+    # sub-issues UI must have its child counted as a blocker. GitHub exposes
+    # two distinct relations — `trackedIssues` (legacy "Tracking" markdown
+    # relation) and `subIssues` (new hierarchical UI). Adapter must read BOTH
+    # and merge them, deduplicated by node id.
+
+    defp blockers_item(extra_content) do
+      base = %{
+        "__typename" => "Issue",
+        "id" => "I_p",
+        "number" => 1,
+        "title" => "x",
+        "state" => "OPEN",
+        "url" => "u",
+        "repository" => %{
+          "nameWithOwner" => "archelab/symphony",
+          "owner" => %{"login" => "archelab"},
+          "name" => "symphony"
+        },
+        "labels" => %{"nodes" => []}
+      }
+
+      %{
+        "type" => "ISSUE",
+        "id" => "PVTI_blk",
+        "isArchived" => false,
+        "fieldValueByName" => %{"name" => "Agent Ready"},
+        "content" => Map.merge(base, extra_content)
+      }
+    end
+
+    test "subIssues populates blocked_by when trackedIssues is empty" do
+      item =
+        blockers_item(%{
+          "trackedIssues" => %{"nodes" => []},
+          "subIssues" => %{
+            "nodes" => [
+              %{
+                "id" => "I_sub1",
+                "number" => 14,
+                "state" => "OPEN",
+                "repository" => %{"nameWithOwner" => "archelab/symphony"}
+              }
+            ]
+          }
+        })
+
+      assert {:ok, %Issue{blocked_by: [blocker]}} = Normalize.item(item, status_field: "Status")
+      assert %Issue.Blocker{id: "I_sub1", identifier: "archelab/symphony#14", state: "OPEN"} = blocker
+    end
+
+    test "trackedIssues populates blocked_by when subIssues is empty" do
+      item =
+        blockers_item(%{
+          "trackedIssues" => %{
+            "nodes" => [
+              %{
+                "id" => "I_tr1",
+                "number" => 7,
+                "state" => "CLOSED",
+                "repository" => %{"nameWithOwner" => "archelab/symphony"}
+              }
+            ]
+          },
+          "subIssues" => %{"nodes" => []}
+        })
+
+      assert {:ok, %Issue{blocked_by: [blocker]}} = Normalize.item(item, status_field: "Status")
+      assert %Issue.Blocker{id: "I_tr1", identifier: "archelab/symphony#7", state: "CLOSED"} = blocker
+    end
+
+    test "both relations merge into blocked_by, deduplicated by id" do
+      shared = %{
+        "id" => "I_shared",
+        "number" => 21,
+        "state" => "OPEN",
+        "repository" => %{"nameWithOwner" => "archelab/symphony"}
+      }
+
+      tr_only = %{
+        "id" => "I_tr_only",
+        "number" => 22,
+        "state" => "OPEN",
+        "repository" => %{"nameWithOwner" => "archelab/symphony"}
+      }
+
+      sub_only = %{
+        "id" => "I_sub_only",
+        "number" => 23,
+        "state" => "OPEN",
+        "repository" => %{"nameWithOwner" => "archelab/symphony"}
+      }
+
+      item =
+        blockers_item(%{
+          "trackedIssues" => %{"nodes" => [shared, tr_only]},
+          "subIssues" => %{"nodes" => [shared, sub_only]}
+        })
+
+      assert {:ok, %Issue{blocked_by: blockers}} = Normalize.item(item, status_field: "Status")
+      ids = Enum.map(blockers, & &1.id)
+      assert "I_shared" in ids
+      assert "I_tr_only" in ids
+      assert "I_sub_only" in ids
+      assert length(blockers) == 3
+      assert Enum.count(blockers, &(&1.id == "I_shared")) == 1
+    end
+
+    test "neither relation populates blocked_by → empty list" do
+      item = blockers_item(%{"trackedIssues" => %{"nodes" => []}, "subIssues" => %{"nodes" => []}})
+      assert {:ok, %Issue{blocked_by: []}} = Normalize.item(item, status_field: "Status")
+
+      # Both keys absent → also empty.
+      item2 = blockers_item(%{})
+      assert {:ok, %Issue{blocked_by: []}} = Normalize.item(item2, status_field: "Status")
+    end
+  end
+
   test "build_repository tolerates malformed nameWithOwner without slash" do
     # A redacted-but-not-explicitly-REDACTED repo can return a bare slug.
     # Old code: `[owner, name] = String.split(..., "/", parts: 2)` raises

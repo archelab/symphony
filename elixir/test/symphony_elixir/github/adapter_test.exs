@@ -372,6 +372,140 @@ defmodule SymphonyElixir.Github.AdapterTest do
     assert by_id["PVTI_draft"].blocked_by == []
   end
 
+  describe "fetch_issue_states_by_ids/1 blocked_by (subIssues + trackedIssues)" do
+    defp refresh_issue_payload(id, content_extra) do
+      %{
+        "data" => %{
+          "rateLimit" => %{"remaining" => 4_000, "resetAt" => "2026-05-10T13:00:00Z"},
+          "nodes" => [
+            %{
+              "__typename" => "ProjectV2Item",
+              "id" => id,
+              "type" => "ISSUE",
+              "isArchived" => false,
+              "fieldValueByName" => %{"name" => "Agent Ready"},
+              "content" =>
+                Map.merge(
+                  %{
+                    "__typename" => "Issue",
+                    "number" => 42,
+                    "state" => "OPEN",
+                    "repository" => %{"nameWithOwner" => "archelab/symphony"}
+                  },
+                  content_extra
+                )
+            }
+          ]
+        }
+      }
+    end
+
+    test "subIssues only populates blocked_by" do
+      payload =
+        refresh_issue_payload("PVTI_sub_only", %{
+          "trackedIssues" => %{"nodes" => []},
+          "subIssues" => %{
+            "nodes" => [
+              %{
+                "id" => "I_sub1",
+                "number" => 14,
+                "state" => "OPEN",
+                "repository" => %{"nameWithOwner" => "archelab/symphony"}
+              }
+            ]
+          }
+        })
+
+      Application.put_env(:symphony_elixir, :github_client, fn _, _, _ -> {:ok, payload} end)
+      assert {:ok, [row]} = Adapter.fetch_issue_states_by_ids(["x"])
+
+      assert row.blocked_by == [
+               %{id: "I_sub1", identifier: "archelab/symphony#14", state: "OPEN"}
+             ]
+    end
+
+    test "trackedIssues only populates blocked_by" do
+      payload =
+        refresh_issue_payload("PVTI_tr_only", %{
+          "trackedIssues" => %{
+            "nodes" => [
+              %{
+                "id" => "I_tr1",
+                "number" => 7,
+                "state" => "CLOSED",
+                "repository" => %{"nameWithOwner" => "archelab/symphony"}
+              }
+            ]
+          },
+          "subIssues" => %{"nodes" => []}
+        })
+
+      Application.put_env(:symphony_elixir, :github_client, fn _, _, _ -> {:ok, payload} end)
+      assert {:ok, [row]} = Adapter.fetch_issue_states_by_ids(["x"])
+
+      assert row.blocked_by == [
+               %{id: "I_tr1", identifier: "archelab/symphony#7", state: "CLOSED"}
+             ]
+    end
+
+    test "both relations merge into blocked_by, deduplicated by id" do
+      shared = %{
+        "id" => "I_shared",
+        "number" => 21,
+        "state" => "OPEN",
+        "repository" => %{"nameWithOwner" => "archelab/symphony"}
+      }
+
+      tr_only = %{
+        "id" => "I_tr_only",
+        "number" => 22,
+        "state" => "OPEN",
+        "repository" => %{"nameWithOwner" => "archelab/symphony"}
+      }
+
+      sub_only = %{
+        "id" => "I_sub_only",
+        "number" => 23,
+        "state" => "OPEN",
+        "repository" => %{"nameWithOwner" => "archelab/symphony"}
+      }
+
+      payload =
+        refresh_issue_payload("PVTI_merge", %{
+          "trackedIssues" => %{"nodes" => [shared, tr_only]},
+          "subIssues" => %{"nodes" => [shared, sub_only]}
+        })
+
+      Application.put_env(:symphony_elixir, :github_client, fn _, _, _ -> {:ok, payload} end)
+      assert {:ok, [row]} = Adapter.fetch_issue_states_by_ids(["x"])
+
+      ids = Enum.map(row.blocked_by, & &1.id)
+      assert "I_shared" in ids
+      assert "I_tr_only" in ids
+      assert "I_sub_only" in ids
+      assert length(row.blocked_by) == 3
+      assert Enum.count(row.blocked_by, &(&1.id == "I_shared")) == 1
+    end
+
+    test "neither relation populates blocked_by → empty list" do
+      payload =
+        refresh_issue_payload("PVTI_none", %{
+          "trackedIssues" => %{"nodes" => []},
+          "subIssues" => %{"nodes" => []}
+        })
+
+      Application.put_env(:symphony_elixir, :github_client, fn _, _, _ -> {:ok, payload} end)
+      assert {:ok, [row]} = Adapter.fetch_issue_states_by_ids(["x"])
+      assert row.blocked_by == []
+
+      # Both keys absent altogether also → [].
+      payload2 = refresh_issue_payload("PVTI_none2", %{})
+      Application.put_env(:symphony_elixir, :github_client, fn _, _, _ -> {:ok, payload2} end)
+      assert {:ok, [row2]} = Adapter.fetch_issue_states_by_ids(["x"])
+      assert row2.blocked_by == []
+    end
+  end
+
   test "fetch_issue_states_by_ids/1 propagates client errors" do
     fake = fn _q, _v, _o -> {:error, {:github_api_request, :timeout}} end
     Application.put_env(:symphony_elixir, :github_client, fake)

@@ -284,8 +284,12 @@ e2e::cleanup_smoke_items() {
   done <<<"$issue_nums"
 
   while IFS= read -r item; do
-    [[ -n "$item" ]] && e2e::delete_project_item "$item"
+    [[ -n "$item" ]] && e2e::delete_project_item "$item" || true
   done <<<"$item_ids"
+
+  # When `item_ids` is empty, the final `[[ -n "$item" ]] && ...` short-circuits
+  # to rc=1 and trips `set -e` at the call site. Guard the function's exit code.
+  return 0
 }
 
 # Swap WORKFLOW.md to the smoke version (backing up original).
