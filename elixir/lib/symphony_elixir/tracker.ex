@@ -7,17 +7,51 @@ defmodule SymphonyElixir.Tracker do
 
   alias SymphonyElixir.Config
 
-  @callback fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
-  @callback fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
-  @callback fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
+  @typedoc """
+  One blocker in a refresh-result `:blocked_by` list.
+  """
+  @type blocker :: %{
+          id: String.t(),
+          identifier: String.t(),
+          state: String.t()
+        }
 
-  @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
+  @typedoc """
+  Canonical refresh-result shape emitted by `SymphonyElixir.Github.Adapter`
+  from `fetch_issue_states_by_ids/1`. The orchestrator's `classify_refresh/3`
+  consumes this shape directly.
+
+  NOTE: `SymphonyElixir.Tracker.Memory` currently returns
+  `SymphonyElixir.Github.Issue` structs from this callback instead of refresh
+  maps. Issue structs carry the same `:id`, `:identifier`, `:state`, and
+  `:blocked_by` keys the orchestrator reads, so the dual shape is accepted
+  end-to-end — but agent-runner's continuation logic only round-trips Issue
+  structs cleanly. Unifying Memory onto this map shape is a follow-up.
+  """
+  @type refresh_result :: %{
+          id: String.t(),
+          identifier: String.t(),
+          state: String.t(),
+          blocked_by: [blocker()]
+        }
+
+  @callback fetch_candidate_issues() ::
+              {:ok, [SymphonyElixir.Github.Issue.t()]} | {:error, term()}
+  @callback fetch_issues_by_states([String.t()]) ::
+              {:ok, [SymphonyElixir.Github.Issue.t()]} | {:error, term()}
+  @callback fetch_issue_states_by_ids([String.t()]) ::
+              {:ok, [refresh_result() | SymphonyElixir.Github.Issue.t()]} | {:error, term()}
+
+  @spec fetch_candidate_issues() ::
+          {:ok, [SymphonyElixir.Github.Issue.t()]} | {:error, term()}
   def fetch_candidate_issues, do: adapter().fetch_candidate_issues()
 
-  @spec fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
+  @spec fetch_issues_by_states([String.t()]) ::
+          {:ok, [SymphonyElixir.Github.Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(states), do: adapter().fetch_issues_by_states(states)
 
-  @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
+  @spec fetch_issue_states_by_ids([String.t()]) ::
+          {:ok, [refresh_result() | SymphonyElixir.Github.Issue.t()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids), do: adapter().fetch_issue_states_by_ids(issue_ids)
 
   @type adapter_module :: SymphonyElixir.Github.Adapter | SymphonyElixir.Tracker.Memory

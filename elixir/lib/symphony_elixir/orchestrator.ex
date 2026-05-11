@@ -27,7 +27,77 @@ defmodule SymphonyElixir.Orchestrator do
     Runtime state for the orchestrator polling loop.
     """
 
-    @type t :: %__MODULE__{}
+    @typedoc """
+    Per-issue running-worker record. Fields documented inline by the dispatch
+    site `spawn_issue_on_worker_host/4`; codex_* fields are written by
+    `integrate_codex_update/2`.
+    """
+    @type running_entry :: %{
+            required(:pid) => pid() | nil,
+            required(:ref) => reference() | nil,
+            required(:issue_id) => String.t(),
+            required(:issue_identifier) => String.t(),
+            required(:identifier) => String.t(),
+            required(:issue) => SymphonyElixir.Github.Issue.t() | map(),
+            required(:worker_host) => String.t() | nil,
+            required(:workspace_path) => String.t() | nil,
+            required(:session_id) => String.t() | nil,
+            required(:last_codex_message) => map() | nil,
+            required(:last_codex_timestamp) => DateTime.t() | nil,
+            required(:last_codex_event) => atom() | nil,
+            required(:codex_app_server_pid) => String.t() | nil,
+            required(:codex_input_tokens) => non_neg_integer(),
+            required(:codex_output_tokens) => non_neg_integer(),
+            required(:codex_total_tokens) => non_neg_integer(),
+            required(:codex_last_reported_input_tokens) => non_neg_integer(),
+            required(:codex_last_reported_output_tokens) => non_neg_integer(),
+            required(:codex_last_reported_total_tokens) => non_neg_integer(),
+            required(:turn_count) => non_neg_integer(),
+            required(:retry_attempt) => non_neg_integer(),
+            required(:blocked_by_snapshot) => [map()],
+            required(:started_at) => DateTime.t(),
+            optional(:last_refresh_state) => String.t() | nil
+          }
+
+    @typedoc """
+    Per-issue retry record. `timer_ref` and `retry_token` are paired so a stale
+    timer (cancelled retry) cannot reactivate a different attempt.
+    """
+    @type retry_entry :: %{
+            required(:attempt) => pos_integer(),
+            required(:timer_ref) => reference(),
+            required(:retry_token) => reference(),
+            required(:due_at_ms) => integer(),
+            required(:identifier) => String.t() | nil,
+            required(:error) => String.t() | nil,
+            required(:worker_host) => String.t() | nil,
+            required(:workspace_path) => String.t() | nil
+          }
+
+    @typedoc """
+    Aggregate codex token + runtime counters surfaced via `:snapshot`.
+    """
+    @type codex_totals :: %{
+            required(:input_tokens) => non_neg_integer(),
+            required(:output_tokens) => non_neg_integer(),
+            required(:total_tokens) => non_neg_integer(),
+            required(:seconds_running) => non_neg_integer()
+          }
+
+    @type t :: %__MODULE__{
+            poll_interval_ms: pos_integer() | nil,
+            max_concurrent_agents: non_neg_integer() | nil,
+            next_poll_due_at_ms: integer() | nil,
+            poll_check_in_progress: boolean() | nil,
+            tick_timer_ref: reference() | nil,
+            tick_token: reference() | nil,
+            running: %{optional(String.t()) => running_entry()},
+            completed: %{optional(String.t()) => %{completed_at: String.t()}},
+            claimed: MapSet.t(String.t()),
+            retry_attempts: %{optional(String.t()) => retry_entry()},
+            codex_totals: codex_totals() | nil,
+            codex_rate_limits: map() | nil
+          }
 
     defstruct [
       :poll_interval_ms,
@@ -95,22 +165,6 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:tick, _tick_token}, state), do: {:noreply, state}
-
-  def handle_info(:tick, state) do
-    state = refresh_runtime_config(state)
-
-    state = %{
-      state
-      | poll_check_in_progress: true,
-        next_poll_due_at_ms: nil,
-        tick_timer_ref: nil,
-        tick_token: nil
-    }
-
-    notify_dashboard()
-    :ok = schedule_poll_cycle_start()
-    {:noreply, state}
-  end
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
@@ -265,6 +319,46 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
         state
 
+      # Spec §11.4 canonical tracker errors — operator-actionable messages
+      # so the dashboard log surfaces the fix without diving into the source.
+      {:error, {:tracker_project_not_found, ctx}} ->
+        Logger.warning(
+          "Tracker project not found — check tracker.owner / tracker.project_number in WORKFLOW.md",
+          owner: get_ctx(ctx, :owner),
+          project_number: get_ctx(ctx, :project_number),
+          reason: :tracker_project_not_found
+        )
+
+        state
+
+      {:error, {:tracker_status_field_missing, ctx}} ->
+        Logger.warning(
+          "Tracker Status field missing on the project — verify the Project has a single-select field named '#{get_ctx(ctx, :status_field) || "Status"}'",
+          project_id: get_ctx(ctx, :project_id),
+          status_field: get_ctx(ctx, :status_field),
+          reason: :tracker_status_field_missing
+        )
+
+        state
+
+      {:error, {:tracker_permission_denied, ctx}} ->
+        Logger.warning(
+          "GitHub returned permission denied — check GITHUB_TOKEN scopes (need `project` + `repo`)",
+          reason: :tracker_permission_denied,
+          context: inspect(ctx)
+        )
+
+        state
+
+      {:error, {:github_rate_limited, ctx}} ->
+        Logger.info(
+          "GitHub GraphQL rate-limited; polling will retry after the rate-limit window",
+          retry_after_seconds: get_ctx(ctx, :retry_after_seconds),
+          reason: :github_rate_limited
+        )
+
+        state
+
       {:error, reason} ->
         Logger.error("Failed to fetch from tracker: #{inspect(reason)}")
         state
@@ -273,6 +367,9 @@ defmodule SymphonyElixir.Orchestrator do
         state
     end
   end
+
+  defp get_ctx(ctx, key) when is_map(ctx), do: Map.get(ctx, key) || Map.get(ctx, to_string(key))
+  defp get_ctx(_ctx, _key), do: nil
 
   defp reconcile_running_issues(%State{} = state) do
     state = reconcile_stalled_running_issues(state)
@@ -372,6 +469,11 @@ defmodule SymphonyElixir.Orchestrator do
   # Reason and identifiers are baked into the message text so capture_log/1
   # (which strips metadata by default) still surfaces them in tests; the same
   # fields are also emitted as Logger metadata for structured backends.
+  #
+  # Level dispatch: crash and stall reasons are operator-actionable error
+  # conditions and log at :warning. All other reasons (clean orchestrator
+  # decisions, terminal-state moves, dependency reopens, normal exits) log at
+  # :info so quiet operation stays quiet.
   defp log_worker_stop(running_entry, reason) when is_map(running_entry) and is_atom(reason) do
     issue_id = Map.get(running_entry, :issue_id) || Map.get(running_entry, :id)
 
@@ -380,7 +482,8 @@ defmodule SymphonyElixir.Orchestrator do
 
     session_id = Map.get(running_entry, :session_id)
 
-    Logger.info(
+    Logger.log(
+      log_level_for_stop_reason(reason),
       "worker stop reason=#{inspect(reason)} issue_id=#{inspect(issue_id)} " <>
         "issue_identifier=#{inspect(issue_identifier)} session_id=#{inspect(session_id)}",
       issue_id: issue_id,
@@ -391,6 +494,11 @@ defmodule SymphonyElixir.Orchestrator do
 
     :ok
   end
+
+  defp log_level_for_stop_reason(reason) when reason in [:agent_exit_crashed, :stall_restart],
+    do: :warning
+
+  defp log_level_for_stop_reason(_reason), do: :info
 
   defp reconcile_stalled_running_issues(%State{} = state) do
     timeout_ms = Config.settings!().codex.stall_timeout_ms
@@ -1450,37 +1558,18 @@ defmodule SymphonyElixir.Orchestrator do
     running_entry = running_entry || %{}
     usage = extract_token_usage(update)
 
-    {
-      compute_token_delta(
-        running_entry,
-        :input,
-        usage,
-        :codex_last_reported_input_tokens
-      ),
-      compute_token_delta(
-        running_entry,
-        :output,
-        usage,
-        :codex_last_reported_output_tokens
-      ),
-      compute_token_delta(
-        running_entry,
-        :total,
-        usage,
-        :codex_last_reported_total_tokens
-      )
+    input = compute_token_delta(running_entry, :input, usage, :codex_last_reported_input_tokens)
+    output = compute_token_delta(running_entry, :output, usage, :codex_last_reported_output_tokens)
+    total = compute_token_delta(running_entry, :total, usage, :codex_last_reported_total_tokens)
+
+    %{
+      input_tokens: input.delta,
+      output_tokens: output.delta,
+      total_tokens: total.delta,
+      input_reported: input.reported,
+      output_reported: output.reported,
+      total_reported: total.reported
     }
-    |> Tuple.to_list()
-    |> then(fn [input, output, total] ->
-      %{
-        input_tokens: input.delta,
-        output_tokens: output.delta,
-        total_tokens: total.delta,
-        input_reported: input.reported,
-        output_reported: output.reported,
-        total_reported: total.reported
-      }
-    end)
   end
 
   defp compute_token_delta(running_entry, token_key, usage, reported_key) do

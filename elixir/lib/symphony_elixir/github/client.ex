@@ -19,8 +19,35 @@ defmodule SymphonyElixir.Github.Client do
           timeout_ms: pos_integer()
         ]
 
+  @typedoc """
+  Categorized error union emitted by `graphql/3`. Spec §11.4.
+
+  Each variant pairs an atom category with a context value:
+
+    * `:github_api_request` — Req transport error (timeout, dns, conn refused).
+      Context is the raw `Req` reason term.
+    * `:github_api_status` — non-2xx HTTP that didn't map to one of the
+      categorized statuses below. Context is `%{http: integer(), body: binary()}`.
+    * `:github_rate_limited` — HTTP 429 or HTTP 403 with `retry-after`.
+      Context is `%{retry_after_seconds: pos_integer() | nil}`.
+    * `:github_graphql_errors` — HTTP 200 with a non-empty `errors` array and no
+      forbidden classification. Context is the raw errors list.
+    * `:github_unknown_payload` — HTTP 200 with neither `data` nor `errors`.
+      Context is a human-readable binary.
+    * `:tracker_permission_denied` — HTTP 401, HTTP 403 without `retry-after`,
+      or a `FORBIDDEN`/`INSUFFICIENT_SCOPES` GraphQL error. Context is
+      `%{http: integer()}` or the raw errors list.
+  """
+  @type graphql_error ::
+          {:github_api_request, term()}
+          | {:github_api_status, %{http: integer(), body: binary() | term()}}
+          | {:github_rate_limited, %{retry_after_seconds: pos_integer() | nil}}
+          | {:github_graphql_errors, [map()]}
+          | {:github_unknown_payload, binary()}
+          | {:tracker_permission_denied, %{http: integer()} | [map()]}
+
   @spec graphql(String.t(), map(), opts()) ::
-          {:ok, map()} | {:error, {atom(), term()}}
+          {:ok, map()} | {:error, graphql_error()}
   def graphql(query, variables, opts) when is_binary(query) and is_map(variables) do
     endpoint = Keyword.fetch!(opts, :endpoint)
     token = Keyword.fetch!(opts, :token)

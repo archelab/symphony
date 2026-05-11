@@ -12,11 +12,13 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @behaviour SymphonyElixir.Tracker
 
+  @impl true
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]}
   def fetch_candidate_issues do
     {:ok, Enum.filter(issue_entries(), &candidate?/1)}
   end
 
+  @impl true
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]}
   def fetch_issues_by_states(state_names) do
     normalized_states =
@@ -30,6 +32,7 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
+  @impl true
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]}
   def fetch_issue_states_by_ids(issue_ids) do
     wanted_ids = MapSet.new(issue_ids)

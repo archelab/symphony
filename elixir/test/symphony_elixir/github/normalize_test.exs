@@ -219,4 +219,52 @@ defmodule SymphonyElixir.Github.NormalizeTest do
 
     assert {:ok, %Issue{blocked_by: []}} = Normalize.item(item, status_field: "Status")
   end
+
+  test "build_repository falls through to nil for an unfamiliar repo map" do
+    # Missing `nameWithOwner` (or any non-binary value for it). All cases land
+    # in the catch-all `_other -> nil` clause; downstream `keep_repo?` then
+    # filters the row out for non-draft kinds.
+    item = %{
+      "type" => "ISSUE",
+      "id" => "PVTI_no_nwo",
+      "isArchived" => false,
+      "fieldValueByName" => %{"name" => "Agent Ready"},
+      "content" => %{
+        "__typename" => "Issue",
+        "id" => "I_no_nwo",
+        "number" => 5,
+        "title" => "x",
+        "state" => "OPEN",
+        "url" => "u",
+        "repository" => %{"owner" => %{"login" => "archelab"}},
+        "labels" => %{"nodes" => []}
+      }
+    }
+
+    assert {:ok, %Issue{repository: nil}} = Normalize.item(item, status_field: "Status")
+  end
+
+  test "build_repository tolerates malformed nameWithOwner without slash" do
+    # A redacted-but-not-explicitly-REDACTED repo can return a bare slug.
+    # Old code: `[owner, name] = String.split(..., "/", parts: 2)` raises
+    # `MatchError`. New code: returns `nil` so upstream filters drop the row.
+    item = %{
+      "type" => "ISSUE",
+      "id" => "PVTI_redacted_repo",
+      "isArchived" => false,
+      "fieldValueByName" => %{"name" => "Agent Ready"},
+      "content" => %{
+        "__typename" => "Issue",
+        "id" => "I_redacted",
+        "number" => 99,
+        "title" => "x",
+        "state" => "OPEN",
+        "url" => "u",
+        "repository" => %{"nameWithOwner" => "weirdRedactedRepo"},
+        "labels" => %{"nodes" => []}
+      }
+    }
+
+    assert {:ok, %Issue{repository: nil}} = Normalize.item(item, status_field: "Status")
+  end
 end

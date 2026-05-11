@@ -6,6 +6,21 @@ defmodule SymphonyElixir.Codex.GithubGraphqlTool do
 
   alias SymphonyElixir.{Config, Github.Client}
 
+  @typedoc """
+  Errors emitted by `handle/1` that originate in this module (i.e. before the
+  GraphQL request is dispatched). See `Codex.DynamicTool.github_error_payload/1`
+  for the user-visible projection.
+  """
+  @type mutation_error ::
+          {:mutation_unparseable, String.t()}
+          | {:mutation_not_allowed, String.t()}
+
+  @typedoc """
+  Alias for `SymphonyElixir.Github.Client.graphql_error/0`. Errors emitted by
+  the underlying transport flow through `handle/1` unchanged.
+  """
+  @type graphql_error :: SymphonyElixir.Github.Client.graphql_error()
+
   @default_mutation_allowlist ~w(
     addComment
     updateProjectV2ItemFieldValue
@@ -34,7 +49,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlTool do
     }
   end
 
-  @spec handle(map()) :: {:ok, map()} | {:error, term()}
+  @spec handle(map()) :: {:ok, map()} | {:error, mutation_error() | graphql_error()}
   def handle(%{"query" => query} = args) do
     variables = Map.get(args, "variables", %{}) || %{}
 

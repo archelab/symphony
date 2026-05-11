@@ -1045,7 +1045,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
-    send(pid, :tick)
+    send(pid, {:tick, initial_state.tick_token})
     Process.sleep(100)
     state = :sys.get_state(pid)
 
@@ -1657,6 +1657,234 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert rendered =~ "app_status=offline"
     refute rendered =~ "Timestamp:"
+  end
+
+  describe "§13.1 worker-stop log level" do
+    test "crash exit reason logs at :warning" do
+      issue_id = "issue-crash-level"
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: "MT-CRASH-LVL",
+        title: "Crash level",
+        description: "Crash exit log warning",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-CRASH-LVL"
+      }
+
+      orchestrator_name = Module.concat(__MODULE__, :CrashLevelOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+      initial_state = :sys.get_state(pid)
+      process_ref = make_ref()
+
+      running_entry = %{
+        pid: self(),
+        ref: process_ref,
+        issue_id: issue_id,
+        issue_identifier: issue.identifier,
+        identifier: issue.identifier,
+        issue: issue,
+        session_id: "thread-crash-lvl",
+        last_codex_message: nil,
+        last_codex_timestamp: nil,
+        last_codex_event: nil,
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      log =
+        capture_log([level: :warning], fn ->
+          send(pid, {:DOWN, process_ref, :process, self(), {:shutdown, :boom}})
+          _ = GenServer.call(pid, :snapshot)
+        end)
+
+      assert log =~ "[warning]"
+      assert log =~ "reason=:agent_exit_crashed"
+    end
+
+    test "stall restart reason logs at :warning" do
+      write_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: 1_000)
+
+      issue_id = "issue-stall-level"
+      orchestrator_name = Module.concat(__MODULE__, :StallLevelOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn -> if Process.alive?(pid), do: Process.exit(pid, :normal) end)
+
+      worker_pid =
+        spawn(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
+      stale_at = DateTime.add(DateTime.utc_now(), -5, :second)
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: worker_pid,
+        ref: make_ref(),
+        identifier: "MT-STALL-LVL",
+        issue: %Issue{id: issue_id, identifier: "MT-STALL-LVL", state: "In Progress"},
+        session_id: "thread-stall-lvl",
+        last_codex_message: nil,
+        last_codex_timestamp: stale_at,
+        last_codex_event: :notification,
+        started_at: stale_at
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      log =
+        capture_log([level: :warning], fn ->
+          send(pid, {:tick, initial_state.tick_token})
+          Process.sleep(100)
+        end)
+
+      assert log =~ "[warning]"
+      assert log =~ "reason=:stall_restart"
+    end
+
+    test "clean reasons log at :info, not :warning" do
+      # reconcile_running emits :info-level worker stops for clean orchestrator
+      # decisions (terminal-or, terminal_state, inactive_state, reconciled_missing).
+      tracker_settings = %{
+        active_states: ["In Progress"],
+        terminal_states: ["Done"],
+        dependency_gating_states: [],
+        gate_running_on_dependencies: false,
+        cross_repo_blockers: false
+      }
+
+      running_entry = %{
+        issue_id: "PVTI_lvl",
+        issue_identifier: "archelab/symphony#777",
+        identifier: "archelab/symphony#777",
+        session_id: "t-lvl",
+        pid: nil,
+        ref: nil,
+        started_at: DateTime.utc_now(),
+        blocked_by_snapshot: []
+      }
+
+      state = %Orchestrator.State{
+        running: %{"PVTI_lvl" => running_entry},
+        claimed: MapSet.new(["PVTI_lvl"]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      log =
+        capture_log([level: :info], fn ->
+          Orchestrator.reconcile_running(
+            {"PVTI_lvl", running_entry},
+            [%{id: "PVTI_lvl", state: "<closed>"}],
+            tracker_settings,
+            state
+          )
+        end)
+
+      assert log =~ "reason=:terminal_or_closed"
+      refute log =~ "[warning] worker stop"
+      refute log =~ "[error] worker stop"
+    end
+  end
+
+  describe "spec §11.4 tracker error logging in maybe_dispatch" do
+    alias SymphonyElixir.Github.Adapter, as: GhAdapter
+    alias SymphonyElixir.Github.RateLimitGate, as: GhRateLimitGate
+
+    setup do
+      GhAdapter.invalidate_cache()
+      GhRateLimitGate.clear()
+
+      orchestrator_name = Module.concat(__MODULE__, :TrackerErrorOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        Application.delete_env(:symphony_elixir, :github_client)
+        GhAdapter.invalidate_cache()
+        GhRateLimitGate.clear()
+        if Process.alive?(pid), do: Process.exit(pid, :normal)
+      end)
+
+      %{pid: pid}
+    end
+
+    test ":tracker_project_not_found surfaces owner+project_number hint", %{pid: pid} do
+      Application.put_env(:symphony_elixir, :github_client, fn _query, _vars, _opts ->
+        {:error, {:tracker_project_not_found, %{owner: "archelab", project_number: 1}}}
+      end)
+
+      log =
+        capture_log(fn ->
+          send(pid, :run_poll_cycle)
+          Process.sleep(50)
+        end)
+
+      assert log =~ "[warning]"
+      assert log =~ "Tracker project not found"
+      assert log =~ "tracker.owner"
+    end
+
+    test ":tracker_status_field_missing surfaces status_field hint", %{pid: pid} do
+      Application.put_env(:symphony_elixir, :github_client, fn _query, _vars, _opts ->
+        {:error, {:tracker_status_field_missing, %{project_id: "PVT_x", status_field: "Status"}}}
+      end)
+
+      log =
+        capture_log(fn ->
+          send(pid, :run_poll_cycle)
+          Process.sleep(50)
+        end)
+
+      assert log =~ "[warning]"
+      assert log =~ "Status field missing"
+      assert log =~ "single-select"
+    end
+
+    test ":tracker_permission_denied surfaces GITHUB_TOKEN scopes hint", %{pid: pid} do
+      Application.put_env(:symphony_elixir, :github_client, fn _query, _vars, _opts ->
+        {:error, {:tracker_permission_denied, %{http: 401}}}
+      end)
+
+      log =
+        capture_log(fn ->
+          send(pid, :run_poll_cycle)
+          Process.sleep(50)
+        end)
+
+      assert log =~ "[warning]"
+      assert log =~ "permission denied"
+      assert log =~ "GITHUB_TOKEN"
+    end
+
+    test ":github_rate_limited logs at :info with retry window note", %{pid: pid} do
+      Application.put_env(:symphony_elixir, :github_client, fn _query, _vars, _opts ->
+        {:error, {:github_rate_limited, %{retry_after_seconds: 60}}}
+      end)
+
+      log =
+        capture_log(fn ->
+          send(pid, :run_poll_cycle)
+          Process.sleep(50)
+        end)
+
+      assert log =~ "rate-limited"
+      assert log =~ "retry after"
+    end
   end
 
   defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do

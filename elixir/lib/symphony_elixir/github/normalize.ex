@@ -70,16 +70,25 @@ defmodule SymphonyElixir.Github.Normalize do
     }
   end
 
-  defp build_repository(%{"nameWithOwner" => nwo} = repo) do
-    [owner, name] = String.split(nwo, "/", parts: 2)
+  defp build_repository(%{"nameWithOwner" => nwo} = repo) when is_binary(nwo) do
+    # A redacted or otherwise malformed nameWithOwner (no `/`) cannot be split
+    # into owner+name; treat it as "no repository" so the upstream `keep_repo?`
+    # filter drops the item rather than raising on a bad destructuring match.
+    case String.split(nwo, "/", parts: 2) do
+      [owner, name] ->
+        %Issue.Repository{
+          owner: owner,
+          name: name,
+          name_with_owner: nwo,
+          default_branch: get_in(repo, ["defaultBranchRef", "name"])
+        }
 
-    %Issue.Repository{
-      owner: owner,
-      name: name,
-      name_with_owner: nwo,
-      default_branch: get_in(repo, ["defaultBranchRef", "name"])
-    }
+      _ ->
+        nil
+    end
   end
+
+  defp build_repository(_other), do: nil
 
   defp identifier_for("draft_issue", item_id, _content, _repo) do
     short = String.slice(item_id, -8, 8)
