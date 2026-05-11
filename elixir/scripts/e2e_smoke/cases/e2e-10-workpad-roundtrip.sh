@@ -32,6 +32,16 @@ WORKFLOW="$E2E_ELIXIR_DIR/WORKFLOW.md"
 BACKUP="$WORKFLOW.e2e10_bak"
 cp "$WORKFLOW" "$BACKUP"
 
+# Install restore trap BEFORE any destructive mutation. If sed/awk fail
+# under `set -euo pipefail`, the trap still restores WORKFLOW.md.
+cleanup_e2e10() {
+  if [[ -f "$BACKUP" ]]; then
+    mv "$BACKUP" "$WORKFLOW"
+  fi
+  rm -f "$WORKFLOW.tmp" "$WORKFLOW.aug"
+}
+trap cleanup_e2e10 EXIT
+
 # Transform: enable workpad, force codex model, tighten max_turns, raise
 # reasoning_effort. We don't need the agent to push code — only to post
 # the marker comment and exit.
@@ -65,10 +75,13 @@ awk -v model="$MODEL" '
 ' "$WORKFLOW" > "$WORKFLOW.aug"
 mv "$WORKFLOW.aug" "$WORKFLOW"
 
-cleanup_e2e10() {
-  mv "$BACKUP" "$WORKFLOW"
-}
-trap cleanup_e2e10 EXIT
+# Assert the awk transform actually fired. If the smoke workflow ever
+# changes its YAML top-level anchors (e.g. indented under another block),
+# the awk pass silently no-ops and e2e-10 would run with the wrong config.
+grep -q '^  workpad:$' "$WORKFLOW" || e2e::verdict_fail \
+  "WORKFLOW augmentation failed: workpad: block not injected (smoke YAML changed?)"
+grep -q "^  model: \"$MODEL\"\$" "$WORKFLOW" || e2e::verdict_fail \
+  "WORKFLOW augmentation failed: codex.model not injected"
 
 e2e::start_orchestrator "$E2E_LOG_DIR/run.log"
 

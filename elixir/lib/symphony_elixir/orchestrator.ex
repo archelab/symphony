@@ -475,6 +475,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  # Test seam for `dispatch_eligible?/3`. Public so the SPEC §4.1.8 invariant
+  # ("state.completed is bookkeeping only, not a dispatch gate") has a direct
+  # regression test — a future change that re-introduces a `completed`-keyed
+  # gate would shut out Rework re-dispatch (§11.8.3) silently.
+  @spec dispatch_eligible_for_test(term(), State.t(), term()) :: boolean()
+  def dispatch_eligible_for_test(issue, %State{} = state, tracker_settings) do
+    dispatch_eligible?(issue, state, tracker_settings)
+  end
+
+  @doc false
   @spec select_worker_host_for_test(term(), String.t() | nil) :: String.t() | nil | :no_worker_capacity
   def select_worker_host_for_test(%State{} = state, preferred_worker_host) do
     select_worker_host(state, preferred_worker_host)
@@ -653,17 +663,25 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   # Live dispatch gate: spec semantics (§11.2.1 terminal-OR + §8.2.1 gating) AND
-  # local capacity guards (claim, running, completed, per-state cap, ssh worker
-  # cap). `dispatchable?/2` is the spec predicate; everything else here is
-  # orchestrator-local bookkeeping.
-  defp dispatch_eligible?(issue, %State{running: running, claimed: claimed, completed: completed} = state, tracker_settings) do
+  # local capacity guards (claim, running, per-state cap, ssh worker cap).
+  # `dispatchable?/2` is the spec predicate; everything else is orchestrator-
+  # local bookkeeping.
+  #
+  # SPEC §4.1.8: `state.completed` is bookkeeping only, NOT a dispatch gate.
+  # `state.claimed` is the actual concurrency-of-dispatch signal — it stays
+  # set across continuation retries and is only released by the retry timer
+  # when the issue leaves Active/terminal. Gating on `completed` here would
+  # permanently shut out an issue after a crash whose retry chain was torn
+  # down (e.g., crash → status moved out of Active mid-retry → release_issue_
+  # claim cleared `claimed` → user moves status back to Active to re-trigger).
+  # The Rework re-dispatch flow (§11.8.3) relies on this gate being claim-only.
+  defp dispatch_eligible?(issue, %State{running: running, claimed: claimed} = state, tracker_settings) do
     issue_id = Map.get(issue, :id)
 
     dispatchable?(issue, tracker_settings) and
       is_binary(issue_id) and
       !MapSet.member?(claimed, issue_id) and
       !Map.has_key?(running, issue_id) and
-      !Map.has_key?(completed, issue_id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running) and
       worker_slots_available?(state)

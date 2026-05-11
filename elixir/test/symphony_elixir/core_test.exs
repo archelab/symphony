@@ -565,6 +565,67 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
+  test "dispatch_eligible_for_test re-dispatches an issue in state.completed once the claim is released (SPEC §4.1.8 + §11.8.3 Rework)" do
+    # Regression guard: `state.completed` is bookkeeping per §4.1.8. After a
+    # crash whose retry chain was torn down (claim released because the issue
+    # left Active mid-retry), the user moves Status back to Active for Rework.
+    # On the next poll the orchestrator MUST be willing to re-dispatch even
+    # though `completed` already has session records for this issue.
+    write_workflow_file!(Workflow.workflow_file_path())
+    tracker_settings = Config.settings!().tracker
+
+    issue = %Issue{
+      id: "PVTI_rework_after_crash",
+      identifier: "archelab/symphony#910",
+      kind: "issue",
+      state: "Agent Ready",
+      issue_state: "OPEN"
+    }
+
+    state_with_prior_completed = %Orchestrator.State{
+      max_concurrent_agents: 4,
+      running: %{},
+      claimed: MapSet.new(),
+      completed: %{
+        issue.id => [
+          %{
+            thread_id: "thr-prior",
+            attempt: 1,
+            dispatched_at: "2026-05-11T10:00:00Z",
+            completed_at: "2026-05-11T10:05:00Z",
+            duration_ms: 300_000,
+            model: "gpt-5.5",
+            stop_reason: :agent_exit_crashed
+          }
+        ]
+      }
+    }
+
+    assert Orchestrator.dispatch_eligible_for_test(issue, state_with_prior_completed, tracker_settings)
+  end
+
+  test "dispatch_eligible_for_test still blocks an issue while its claim is held (SPEC §4.1.8 — claim is the gate)" do
+    write_workflow_file!(Workflow.workflow_file_path())
+    tracker_settings = Config.settings!().tracker
+
+    issue = %Issue{
+      id: "PVTI_claim_held",
+      identifier: "archelab/symphony#911",
+      kind: "issue",
+      state: "Agent Ready",
+      issue_state: "OPEN"
+    }
+
+    state_with_active_claim = %Orchestrator.State{
+      max_concurrent_agents: 4,
+      running: %{},
+      claimed: MapSet.new([issue.id]),
+      completed: %{}
+    }
+
+    refute Orchestrator.dispatch_eligible_for_test(issue, state_with_active_claim, tracker_settings)
+  end
+
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
 

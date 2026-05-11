@@ -78,6 +78,41 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
              })
   end
 
+  test "operator-narrowed allowlist still gets updateIssueComment when workpad enabled (SPEC §11.8.4 + §18.2.1)" do
+    fake =
+      fn _q, _v, _opts ->
+        {:ok, %{"data" => %{"updateIssueComment" => %{"issueComment" => %{"id" => "c2"}}}}}
+      end
+
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    # Operator narrows the allowlist to a single non-workpad mutation. The
+    # workpad-gated extras are still added on top because §11.8.4 says they
+    # MUST be available when the protocol is enabled.
+    Application.put_env(:symphony_elixir, :github_graphql_mutation_allowlist, ~w(updateProjectV2ItemFieldValue))
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :github_client)
+      Application.delete_env(:symphony_elixir, :github_graphql_mutation_allowlist)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_workpad_enabled: true)
+
+    assert {:ok, %{"data" => %{"updateIssueComment" => _}}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { updateIssueComment(input:{id:\"c2\", body:\"x\"}) { issueComment { id } } }",
+               "variables" => %{}
+             })
+
+    # addComment is NOT in the operator's narrowed list AND not in the workpad
+    # extras → still rejected. This confirms the merge does not silently
+    # re-introduce the full default allowlist.
+    assert {:error, {:mutation_not_allowed, "addComment"}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { addComment(input:{subjectId:\"x\", body:\"x\"}) { clientMutationId } }",
+               "variables" => %{}
+             })
+  end
+
   test "rejects deleteIssueComment — workpad is append-only at the row level (SPEC §11.8.4)" do
     write_workflow_file!(Workflow.workflow_file_path())
 
