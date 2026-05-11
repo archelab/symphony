@@ -353,7 +353,10 @@ Fields:
   dispatch gating). Implementations MAY keep this as a plain set if they do not
   surface `last_run_completed_at` to prompts (Section 12.3); the map shape is
   REQUIRED only when the OPTIONAL `last_run_completed_at` template variable is
-  exposed.
+  exposed. When the OPTIONAL Agent Workpad Protocol (Section 11.8) is enabled,
+  the per-issue value MUST extend further to an ordered list of per-session
+  records (Section 11.8.5); implementations adopting §11.8 MUST plan for this
+  schema migration rather than treating it as a value-shape tweak.
 - `codex_totals` (aggregate tokens + runtime seconds)
 - `codex_rate_limits` (latest rate-limit snapshot from agent events)
 
@@ -1996,19 +1999,35 @@ needs to know two things that span sessions:
 Section 12.3 already exposes `last_run_completed_at` so the agent can scope (2).
 This section defines a complementary in-band memory mechanism for (1): the **agent
 workpad** — a single, agent-edited issue comment that records every session against
-the issue.
+the underlying Issue or Pull Request.
 
-The workpad lives entirely in the tracker (a GitHub issue or pull request comment).
+The workpad lives entirely in the tracker (a GitHub Issue or PullRequest comment).
 The orchestrator MUST NOT post, edit, or delete the workpad directly; per
 Section 11.5 it owns no tracker writes. Instead, the orchestrator supplies the
 agent with the identifiers and statistics the workpad needs, and the agent is
 responsible for find-or-create + edit operations via the `github_graphql` Codex
 tool (Section 18.2.1).
 
+**Item-kind scope.** The protocol applies only when `issue.kind ∈ {"issue", "pull_request"}`
+— both correspond to real GitHub `Commentable` node types (Issue, PullRequest). When
+`issue.kind == "draft_issue"`, the underlying Project v2 DraftIssue is not
+`Commentable` (an `addComment` mutation against it returns a GraphQL type error), so
+the orchestrator MUST omit the workpad prompt variables (Section 11.8.5) and the
+workflow template MUST tolerate their absence (Section 11.8.9). Draft Issues are
+expected to be promoted to a real Issue early in their lifecycle, at which point
+the protocol becomes active on subsequent dispatches.
+
+**Interaction with Section 11.7.** When the PR Review and CI Awareness extension
+re-dispatches a PR because a dispatch signal (`changes_requested`, `ci_failure`,
+`review_requested`) fired, the re-dispatch is a new session row in the workpad,
+not a continuation of the prior session's row. The §11.7 predicate decides
+*whether* to dispatch; the workpad records *every* dispatch as a distinct row
+keyed by Codex thread id (Section 11.8.5).
+
 #### 11.8.1 Workpad Identity and Discovery
 
-A workpad is a single issue comment on the GitHub Issue or Pull Request that backs
-the project item. It is identified by an opening HTML comment marker on the first
+A workpad is a single comment on the GitHub Issue or PullRequest that backs the
+project item. It is identified by an opening HTML comment marker on the first
 line of the comment body:
 
 ```
@@ -2022,28 +2041,45 @@ And a closing marker on the last line:
 ```
 
 The marker `v1` is a protocol version. Implementations MAY introduce `v2` later;
-the agent SHOULD treat an unknown version as "not a workpad I can edit safely" and
+the agent MUST treat an unknown version as "not a workpad I can edit safely" and
 fall back to creating a new one rather than risk stomping a future format.
 
 To find the existing workpad on dispatch, the agent MUST:
 
-1. Read the issue/PR's comments via `gh issue view <number> --comments --json comments`
-   or the equivalent GraphQL `comments(last: N)` query.
-2. Filter for comments whose body starts with `<!-- symphony-workpad:v1 -->`.
-3. If exactly one match is found, that is the workpad. Capture its node id (for
-   `updateIssueComment` mutations) and body.
-4. If zero matches are found, the agent creates a new workpad (Section 11.8.4) on its
-   first relevant edit.
-5. If more than one match is found, the agent SHOULD log a warning and operate on
-   the most recently created one. Multiple workpads indicate either a prior protocol
-   bug or concurrent orchestrator runs (which Section 11.8.7 forbids); the operator
-   should resolve manually.
-
-Comments on the same issue posted by humans or by other tools are ignored, even if
-they happen to contain the literal marker text inside fenced code blocks — the
-marker MUST be the very first content of the comment body. Implementations of the
-parser SHOULD use `String.starts_with?/2`-equivalent matching against the trimmed
-body, NOT a substring search.
+1. Read the underlying Issue or PullRequest's comments via the GraphQL
+   `comments` connection. Use `gh issue view <number> --json comments` for
+   `issue.kind == "issue"` and `gh pr view <number> --json comments` for
+   `issue.kind == "pull_request"` — the two CLI surfaces are not interchangeable
+   even though both expose the same `IssueComment` node type underneath. The
+   equivalent GraphQL is `repository(owner, name) { issue(number) { comments(...) } }`
+   or `repository(owner, name) { pullRequest(number) { comments(...) } }`. The
+   field `issueOrPullRequest` does NOT exist on `Repository`; an agent that
+   issues that query receives a schema error.
+2. Paginate. The agent MUST paginate forward via `comments(first: N, after: $cursor)`
+   until the marker is found OR `pageInfo.hasNextPage` is false. A single
+   `comments(last: 100)` request silently truncates issues with more than 100
+   comments and would lose an old workpad in a chatty issue.
+3. Project each comment with at minimum `id`, `databaseId`, `body`, `createdAt`,
+   `author { login }`. Do NOT use `viewerDidAuthor` — it is a field on
+   `Reactable`, not on `IssueComment`. The "did I (the agent) author this?"
+   signal MUST come from comparing `author.login` against the configured agent
+   identity (the PAT user, or `<app-name>[bot]` for GitHub App installations).
+4. Filter for comments whose body, after trimming leading whitespace, starts
+   with `<!-- symphony-workpad:v` followed by a recognized version number.
+   The `String.starts_with?/2`-equivalent matching MUST be on the trimmed body,
+   NOT a substring search — comments quoting the marker inside fenced code are
+   ignored.
+5. If exactly one match is found, that is the workpad. Capture its node id
+   (for `updateIssueComment` mutations) and body.
+6. If zero matches are found, the agent creates a new workpad (Section 11.8.4)
+   on its first relevant edit.
+7. If more than one match is found, the agent SHOULD log a warning and operate
+   on the deterministically-newest one, ordered by `(createdAt DESC,
+   databaseId DESC)`. `createdAt` has second precision and can collide between
+   two near-simultaneous `addComment` calls; `databaseId` is monotonic and
+   provides the secondary tiebreaker. Multiple workpads indicate either a prior
+   protocol bug or concurrent orchestrator runs (which Section 11.8.7 forbids);
+   the operator should resolve manually.
 
 #### 11.8.2 Workpad Structure
 
@@ -2057,10 +2093,10 @@ A v1 workpad MUST conform to the following structure:
 
 | Session | Attempt | Started (UTC) | Ended (UTC) | Duration | Model | Stop reason |
 |---|---|---|---|---|---|---|
-| `<session_id>` | <attempt> | <iso8601> | <iso8601 or "—"> | <hh:mm:ss or "—"> | <model> | <reason or "—"> |
+| `<thread_id>` | <attempt> | <iso8601> | <iso8601 or "—"> | <hh:mm:ss or "—"> | <model> | <reason or "—"> |
 | ... | ... | ... | ... | ... | ... | ... |
 
-### Current session — `<session_id>`, attempt <N>
+### Current session — `<thread_id>`, attempt <N>
 
 <freeform agent-authored body: goals, plan, actions taken, open questions>
 
@@ -2069,36 +2105,42 @@ A v1 workpad MUST conform to the following structure:
 
 Field constraints:
 
-- **Session column.** The Codex session id supplied by the orchestrator. MUST be a
-  fixed-width identifier (Codex's session ids are ULIDs in practice). Format in a
-  backtick code span so GitHub does not interpret it as a link.
+- **Session column.** The Codex thread id supplied by the orchestrator as the
+  `thread_id` prompt variable (Section 11.8.5). The agent MUST render the value
+  verbatim in a backtick code span. The spec makes no assumption about the
+  identifier's shape — implementations MAY use ULIDs, UUIDs, or any other
+  opaque token Codex emits. Section 4.2's compound `Session ID`
+  (`<thread_id>-<turn_id>`) is NOT used here because the workpad records a
+  whole session, not a per-turn position.
 - **Attempt column.** The orchestrator-supplied `attempt` integer (1-indexed).
 - **Started (UTC).** RFC3339 with seconds precision. Sourced from
   `dispatched_at` (Section 11.8.5).
 - **Ended (UTC).** RFC3339 with seconds precision once the session terminates,
   or the literal string `—` while the session is in flight. The current session
-  SHOULD render `—` until the agent's final turn, at which point it MAY update to
-  the wall-clock time it observed last (the orchestrator-observed exit time is
-  authoritative and visible in the structured logs of Section 13.1).
+  SHOULD render `—` until the agent's final turn, at which point it MAY update
+  to the wall-clock time it observed last (the orchestrator-observed exit time
+  is authoritative and visible in the structured logs of Section 13.1).
 - **Duration.** Wall-clock between Started and Ended, formatted `<H>h<M>m<S>s`
   (lower components omitted when zero). `—` while in flight.
-- **Model.** The Codex model identifier (for example `gpt-5.5`), supplied by the
-  orchestrator.
-- **Stop reason.** The Section 13.1 reason atom (without the leading colon) once
-  known: `agent_exit_normal`, `agent_exit_crashed`, `terminal_state`,
-  `terminal_or_closed`, `terminal_or_merged`, `inactive_state`,
-  `dependencies_reopened`, `reconciled_missing`, `stall_restart`. `—` while in
-  flight. The agent's view of its own stop reason is best-effort; the
-  authoritative record is in the orchestrator's logs.
+- **Model.** The Codex model identifier (for example `gpt-5.5`), supplied by
+  the orchestrator (Section 11.8.5).
+- **Stop reason.** The Section 13.1 worker-stop reason atom (without the
+  leading colon) once known. `—` while in flight. The complete vocabulary is
+  defined in Section 13.1; the agent MUST render whichever token the
+  orchestrator-authored §13.1 log line carried — it MUST NOT invent new tokens.
+  The agent's view of its own stop reason is best-effort; the authoritative
+  record is in the orchestrator's logs.
 
 The **freeform body** under "Current session" is at the agent's discretion. It
 SHOULD record (at minimum) the goal, the plan, the actions taken, and any open
 questions or blockers. It SHOULD NOT repeat content already present in the table
-(session id, model, etc.).
+(thread id, model, etc.).
 
-The workpad MUST NOT exceed the GitHub issue-comment body limit (currently 65,536
-characters). When the sessions table grows beyond an implementation-defined cap
-(RECOMMENDED: 20 rows), the agent SHOULD fold older rows into a placeholder line
+The workpad MUST NOT exceed the GitHub issue-comment body limit (empirically
+observed at 65,536 characters; not enforced in the published GraphQL schema and
+subject to change). When the sessions table grows beyond an implementation-defined
+cap (configured via `agent.workpad.max_sessions_visible`, Section 11.8.9;
+default 20 rows), the agent SHOULD fold older rows into a placeholder line
 formatted exactly as:
 
 ```
@@ -2106,7 +2148,8 @@ formatted exactly as:
 ```
 
 where `N` is the count of folded rows. The placeholder is purely informational;
-the authoritative per-session log lives in Section 13.1 structured logs.
+the authoritative per-session log lives in Section 13.1 structured logs and the
+orchestrator's `prior_sessions` prompt variable.
 
 #### 11.8.3 Workpad Lifecycle
 
@@ -2119,117 +2162,184 @@ For every dispatched session, on **first turn**, the agent MUST:
    session.
 3. If it does not exist: post a new comment containing a freshly initialized v1
    workpad with one row (this session) and an empty current-session body. Use the
-   `addComment` mutation (already on the default allowlist per Section 18.2.1).
+   `addComment` mutation against the underlying Issue or PullRequest node id
+   (Section 11.8.5's `subject_id` variable). `addComment` is on the default
+   mutation allowlist (Section 18.2.1).
 
-During execution, the agent SHOULD update the workpad body as plans evolve.
-Implementations MAY rate-limit workpad updates (for example: at most one
-`updateIssueComment` per N turns) to control mutation noise; the protocol does
-not require per-turn updates.
+During execution, the agent SHOULD update the workpad body as plans evolve. The
+agent SHOULD serialize workpad writes within a single session — two concurrent
+`updateIssueComment` calls from the same agent against the same comment are
+last-write-wins (Section 11.8.7) and risk dropping content. Implementations MAY
+rate-limit workpad updates (for example: at most one `updateIssueComment` per N
+turns, where N matches `agent.workpad.update_throttle_turns`) to control
+mutation noise; the protocol does not require per-turn updates.
 
 On the agent's **final turn** before voluntary completion, the agent MUST:
 
 1. Update the current session's row to fill in Ended, Duration, and the agent's
    best-effort Stop reason (typically `agent_exit_normal`).
 2. Move the "Current session" body content under a heading `### Session
-   <session_id> notes` (immediately above the current-session heading) so future
+   <thread_id> notes` (immediately above the current-session heading) so future
    sessions see the archived per-session detail rather than overwriting it.
 
 A session that exits abnormally (orchestrator-driven termination, codex crash,
 worker timeout) cannot update its own row. The next dispatched session MUST
-patch the row by referencing the `last_run_completed_at` and the prior session
-id from `prior_sessions` (Section 11.8.5).
+patch the prior row using the values from `prior_sessions[0]` (Section 11.8.5),
+which the orchestrator populates from its §13.1 termination record.
+
+Each §11.7-driven re-dispatch (PR review or CI signal) opens a new session row
+under the rules above; the prior row is closed out exactly as for any other
+voluntary or abnormal exit.
 
 #### 11.8.4 GitHub GraphQL Operations Required
 
-The workpad protocol exercises the following GitHub GraphQL operations against
-the comment hosting the workpad:
+All operations below are issued by the **agent** through the `github_graphql`
+Codex tool (Section 18.2.1); per Section 11.5 the orchestrator MUST NOT invoke
+them. Queries are unrestricted by the mutation allowlist; only the mutations
+named below need to be on the allowlist for the agent to call them.
 
-- **Read** the comment list: `query { repository(owner, name) { issueOrPullRequest(number) {
-  comments(last: 100) { nodes { id, body, viewerDidAuthor, createdAt, author { login } } } } } }`.
-  Queries are unrestricted by the mutation allowlist; no extension to the allowlist
-  is required for reads.
-- **Create** the initial workpad: `mutation { addComment(input: { subjectId: <issue/PR
-  node id>, body: <markdown> }) { commentEdge { node { id } } } }`. `addComment` is on the
-  default mutation allowlist (Section 18.2.1) and requires no extension.
-- **Update** the workpad: `mutation { updateIssueComment(input: { id: <comment node id>,
-  body: <new markdown> }) { issueComment { id } } }`. `updateIssueComment` is **NOT**
-  on the default mutation allowlist as of v1 and MUST be added by implementations
-  that enable the workpad protocol. Implementations SHOULD document this addition
-  explicitly.
-- **NEVER delete.** `deleteIssueComment` MUST NOT be added to the allowlist for
-  workpad purposes. A workpad is append-only at the row level; corrections are
-  done via `updateIssueComment`.
-
-For pull request review comments (replies on specific code lines) the protocol does
-NOT operate — the workpad lives on the PR's issue-conversation thread, which uses
-`addComment` / `updateIssueComment` the same as a regular Issue. Review-thread
-mutations (`resolveReviewThread`, `addPullRequestReview`) remain governed by the
-existing allowlist and have no workpad interaction.
+- **Read** the comment list (paginated, per Section 11.8.1):
+  ```graphql
+  query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {  # or pullRequest(number: $number) depending on issue.kind
+        comments(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id databaseId body createdAt author { login } }
+        }
+      }
+    }
+  }
+  ```
+  Branch on `issue.kind` to select `issue` vs `pullRequest`. The field
+  `issueOrPullRequest` does NOT exist on `Repository`. Implementations MAY
+  alternatively use the `node(id: $subject_id)` form with an inline fragment
+  union over `Issue` and `PullRequest` to avoid the branch.
+- **Create** the initial workpad:
+  ```graphql
+  mutation($subjectId: ID!, $body: String!) {
+    addComment(input: { subjectId: $subjectId, body: $body }) {
+      commentEdge { node { id databaseId } }
+    }
+  }
+  ```
+  `$subjectId` is the underlying Issue or PullRequest node id (NOT the Project
+  v2 item id, which starts `PVTI_…`). It is supplied to the prompt as
+  `subject_id` (Section 11.8.5). `addComment` is on the default mutation
+  allowlist (Section 18.2.1) and requires no extension. DraftIssue node ids
+  (starting `DI_`) are NOT `Commentable` and the mutation returns a type
+  error — Section 11.8 already scopes this case out via item-kind exclusion.
+- **Update** the workpad:
+  ```graphql
+  mutation($id: ID!, $body: String!) {
+    updateIssueComment(input: { id: $id, body: $body }) {
+      issueComment { id }
+    }
+  }
+  ```
+  `updateIssueComment` is **NOT** on the default mutation allowlist as of v1
+  and MUST be added by implementations that enable the workpad protocol.
+  Implementations SHOULD document this addition explicitly. The same mutation
+  works for both Issue conversation comments and PullRequest conversation
+  comments — they share the `IssueComment` GraphQL type. PullRequest
+  *review-thread* comments are a separate `PullRequestReviewComment` type and
+  use `updatePullRequestReviewComment`; the workpad protocol does NOT touch
+  review-thread comments.
+- **NEVER delete.** `deleteIssueComment` MUST NOT be added to the allowlist
+  for workpad purposes. A workpad is append-only at the row level; corrections
+  are done via `updateIssueComment`.
 
 #### 11.8.5 Orchestrator Responsibilities
 
 The orchestrator MUST extend the prompt rendering context with the following
-variables in addition to those required by Section 12.1:
+variables in addition to those required by Section 12.1, but only when
+`agent.workpad.enabled: true` (Section 11.8.9) AND `issue.kind ∈ {"issue", "pull_request"}`:
 
-- **`session_id`** (string, REQUIRED). The Codex session id for the current
-  dispatch. Identical to the `session_id` written into Section 13.1 structured
-  logs for this run.
+- **`thread_id`** (string, REQUIRED). The Codex thread identifier for the
+  current dispatch — the stable per-session token Codex emits at session
+  start, before any turn. This is the value the workpad uses to key its
+  sessions table. Implementations capture it from the coding-agent app-server
+  client (Section 10) immediately after the session is created and before the
+  first turn is sent, so the value is available in the first prompt. Note:
+  `thread_id` is the *session-scoped* component of Section 4.2's compound
+  `Session ID` (`<thread_id>-<turn_id>`); the workpad ignores the per-turn
+  suffix because it records sessions, not turns.
 - **`dispatched_at`** (RFC3339 string, REQUIRED). Wall-clock UTC timestamp at
   which the orchestrator started the worker Task for this session.
-- **`model`** (string, REQUIRED). The Codex model identifier the agent is running
-  under. Implementations MAY parse this from `codex.command` config OR add a
-  dedicated `codex.model` config field; the value MUST match what the agent will
-  report if asked.
+- **`model`** (string, REQUIRED). The Codex model identifier the agent is
+  running under (for example `gpt-5.5`). Implementations SHOULD source this
+  from a dedicated `codex.model` config field rather than parsing the
+  free-form `codex.command` shell string. The value MUST match what the
+  agent will self-report if asked.
+- **`subject_id`** (string, REQUIRED). The GraphQL node id of the underlying
+  Issue or PullRequest content — `I_…` for Issue, `PR_…` for PullRequest. This
+  is NOT the Project v2 item id (`PVTI_…`); the latter is `issue.id`. Sourced
+  during candidate fetch (Section 11.2) and threaded through to dispatch.
 - **`prior_sessions`** (list of structured records, REQUIRED — possibly empty).
-  Each record SHOULD contain at minimum: `session_id`, `attempt`, `dispatched_at`,
-  `completed_at`, `duration_ms`, `model`, `stop_reason`. Implementations MAY
-  include additional fields (token counts, retry counters) but MUST NOT include
-  fields whose values cannot be independently verified outside the LLM
-  (Section 11.8.8).
-
-These variables are REQUIRED whenever `tracker.kind` supports the workpad protocol
-and the workflow opts in (Section 11.8.9). They are OPTIONAL for tracker kinds
-that have no comment surface (for example a Memory adapter).
+  Each record contains at minimum: `thread_id`, `attempt`, `dispatched_at`,
+  `completed_at`, `duration_ms`, `model`, `stop_reason`. The most recent prior
+  session is at index 0. Implementations MAY include additional fields the
+  orchestrator can verify (workspace path, retry counters) but MUST NOT
+  include fields whose values cannot be independently verified outside the
+  LLM (token counts reported by the LLM provider, internal-only timers); see
+  Section 11.8.8.
 
 The orchestrator MUST persist enough state to populate `prior_sessions` across
-restarts. The completed-issue bookkeeping (Section 4.1.8) MUST therefore carry,
-per session: `session_id`, `attempt`, `dispatched_at`, `completed_at`,
-`duration_ms`, `model`, `stop_reason`. Implementations SHOULD preserve at least
-the last K sessions per issue (RECOMMENDED: K = 20, matching Section 11.8.2
-folding) and MAY prune older entries.
+restarts. This extends the `completed` map shape defined in Section 4.1.8: when
+the workpad protocol is enabled, `completed[issue_id]` MUST hold an ordered
+list of session records carrying the seven fields above, not just the singleton
+`completed_at` timestamp. Implementations SHOULD retain at least the last K
+sessions per issue (RECOMMENDED: K = 20, matching the default
+`agent.workpad.max_sessions_visible`) and MAY prune older entries. When the
+protocol is disabled (the default), the Section 4.1.8 shape stands unchanged
+and no per-session bookkeeping is required.
 
 #### 11.8.6 Failure Modes and Recovery
 
 The workpad protocol is **best-effort** from the agent's side. The following
 failure modes MUST NOT block dispatch or worker execution:
 
-- Comments API rate-limited. Agent SHOULD skip the workpad update for this turn
-  and retry later in the session.
-- Workpad comment manually deleted by a human. Agent SHOULD detect this on next
-  read (no comment matches the marker), log it, and create a fresh workpad. The
-  `prior_sessions` prompt variable still gives it the cross-session memory.
-- Workpad body malformed (table parse fails, marker present but structure
-  unexpected). Agent SHOULD log the issue, archive the corrupted body verbatim
-  under a `### Recovered notes (corrupted workpad)` heading, and continue with a
-  fresh table. NEVER overwrite without preserving the prior content.
-- `updateIssueComment` returns an authorization error. Agent SHOULD fall back to
-  posting a new comment with the updated content AND a header noting the prior
-  workpad's node id, then log the divergence. Operators must reconcile manually.
+- **Comments API rate-limited.** GraphQL comment mutations consume the agent's
+  shared primary GraphQL point budget AND are subject to GitHub's secondary
+  content-creation throttle. Agent SHOULD skip the workpad update for this
+  turn. On `Retry-After` (secondary) the agent MUST honour the header; on
+  `rateLimit.resetAt` exhaustion (primary) the agent SHOULD wait until reset
+  and SHOULD NOT retry workpad writes in tight loops.
+- **Workpad comment manually deleted by a human.** Agent MUST detect this on
+  its next discovery pass (no comment matches the marker), log it, and create
+  a fresh workpad. The `prior_sessions` prompt variable still gives the agent
+  its cross-session memory; the on-tracker workpad is regenerated empty.
+- **Workpad body malformed** (table parse fails, marker present but structure
+  unexpected, unknown version). Agent SHOULD log the issue, archive the
+  corrupted body verbatim under a `### Recovered notes (corrupted workpad)`
+  heading inside the new workpad, and continue with a fresh table. NEVER
+  overwrite without preserving the prior content.
+- **`updateIssueComment` returns an authorization error.** Agent SHOULD fall
+  back to posting a new comment with the updated content AND a header noting
+  the prior workpad's node id, then log the divergence. Operators must
+  reconcile manually.
+- **Underlying Issue or PullRequest closes mid-session.** GitHub rejects
+  `addComment` / `updateIssueComment` against locked or closed Issues with
+  HTTP 403 in some configurations. Agent SHOULD log the failure and skip
+  workpad writes for the remainder of the session; the orchestrator's
+  terminal-OR teardown (Section 11.2.1) is the authoritative termination
+  signal and will stop the worker on the next reconcile tick regardless.
 
-The orchestrator's structured logs (Section 13.1) remain the authoritative record
-of session history regardless of workpad state.
+The orchestrator's structured logs (Section 13.1) remain the authoritative
+record of session history regardless of workpad state.
 
 #### 11.8.7 Single-Orchestrator Constraint
 
 The workpad protocol assumes a single orchestrator dispatches workers against a
 given Project. If two orchestrators ran against the same Project simultaneously,
-both could direct their respective agents to edit the same workpad and stomp each
-other's changes (GitHub's `updateIssueComment` is last-write-wins; there is no
-ETag-equivalent on comment bodies).
+both could direct their respective agents to edit the same workpad and stomp
+each other's changes (GitHub's `updateIssueComment` exposes no optimistic
+concurrency token on `IssueComment` — neither in GraphQL nor REST — so the
+write is last-write-wins).
 
-Implementations MUST document that running multiple orchestrators against a single
-Project is unsupported. They MAY add a startup probe that fails if it detects
-recent workpad edits attributed to a different orchestrator identity.
+Implementations MUST document that running multiple orchestrators against a
+single Project is unsupported. They MAY add a startup probe that fails if it
+detects recent workpad edits attributed to a different orchestrator identity.
 
 #### 11.8.8 Truthfulness Constraints
 
@@ -2238,8 +2348,9 @@ could write values that disagree with the orchestrator's observed reality (for
 example claiming a different stop reason than what the §13.1 log recorded).
 Implementations MUST:
 
-- Refuse to expose orchestrator-internal data the agent cannot verify (raw token
-  counters from the LLM provider, internal retry timers).
+- Refuse to expose orchestrator-internal data the agent cannot verify (raw
+  token counters from the LLM provider, internal retry timers, host identifiers
+  not derivable from public state).
 - Document explicitly that workpad rows are agent-self-reported snapshots, not
   audit records.
 - Recommend operators cross-reference Section 13.1 structured logs when the
@@ -2253,19 +2364,28 @@ Workflows opt into the workpad protocol via the `agent.workpad` config block:
 agent:
   workpad:
     enabled: true               # default: false (back-compat)
-    version: v1                  # only "v1" supported in this spec
-    max_sessions_visible: 20     # rows before folding, default 20
-    update_throttle_turns: 3     # min turns between updateIssueComment calls
+    version: v1                 # MUST equal the marker version; only "v1" supported in this spec
+    max_sessions_visible: 20    # rows before folding, default 20
+    update_throttle_turns: 3    # min turns between updateIssueComment calls, default 3
 ```
 
 `agent.workpad.enabled: false` (the default) means the orchestrator MUST NOT
-emit the `session_id`, `dispatched_at`, `model`, or `prior_sessions` prompt
-variables, and the workflow template MUST NOT reference them. This preserves
-backward compatibility with workflows written before the protocol existed.
+emit the `thread_id`, `dispatched_at`, `model`, `subject_id`, or
+`prior_sessions` prompt variables, and the workflow template MUST NOT reference
+them. This preserves backward compatibility with workflows written before the
+protocol existed: any existing template that does not mention the variables
+renders identically to its pre-§11.8 behavior.
+
+`agent.workpad.version` MUST match the version embedded in the workpad marker
+(`<!-- symphony-workpad:v1 -->`). A future v2 protocol MUST bump both the
+config value and the marker simultaneously, and implementations SHOULD reject
+configs whose `version` does not match a marker the implementation knows how
+to read or write.
 
 `agent.workpad.enabled: true` requires the workflow template to include the
 agent-facing protocol instructions described in Section 11.8.3 (or equivalent
-prose). Implementations SHOULD ship a reference template snippet.
+prose). Implementations SHOULD ship a reference template snippet that operators
+can paste into their `WORKFLOW.md`.
 
 ## 12. Prompt Construction and Context Assembly
 
@@ -2328,9 +2448,15 @@ Message formatting requirements:
 - Include concise failure reason when present.
 - Avoid logging large raw payloads unless necessary.
 
-Worker-stop reason vocabulary (RECOMMENDED). Reconciliation log entries that record
-why a running worker was stopped SHOULD use a stable token from the following set so
-operators consuming logs across implementations see one vocabulary:
+Worker-stop reason vocabulary (RECOMMENDED). Reconciliation and worker-exit log
+entries that record why a running worker was stopped SHOULD use a stable token from
+the following set so operators consuming logs across implementations see one
+vocabulary. Tokens fall into two groups: reasons issued by the orchestrator's
+reconcile loop (the worker is still alive when the decision is made) and reasons
+issued by the orchestrator's worker-exit handler (the worker process is already
+gone).
+
+Reconcile-driven tokens (orchestrator stops a live worker):
 
 - `reconciled_missing` — the project item disappeared between polls (no longer
   resolves via `nodes(ids:)`).
@@ -2345,8 +2471,25 @@ operators consuming logs across implementations see one vocabulary:
   resolved blocker transitioned back to open during reconciliation (Section 8.5
   Part C).
 
+Worker-exit tokens (the orchestrator's `:DOWN` handler observes the worker's exit):
+
+- `agent_exit_normal` — the worker `Task` exited with reason `:normal`, indicating
+  the agent run completed (successfully or with a graceful early exit). This is the
+  default outcome for runs that finish within `agent.max_turns`.
+- `agent_exit_crashed` — the worker `Task` exited with a non-`:normal` reason
+  (raised exception, link failure, OS signal, etc.). The orchestrator SHOULD log
+  this at warning level and schedule the issue for retry per Section 14.
+- `stall_restart` — the worker was alive at reconcile time but failed the stall
+  liveness check (no agent progress within an implementation-defined threshold).
+  The orchestrator terminates the worker and schedules a retry. Stall semantics are
+  implementation-specific; implementations SHOULD document the threshold and the
+  detection method.
+
 Implementations MAY add deployment-specific tokens, but SHOULD prefix them
-(`ext_<name>`) to avoid colliding with future canonical vocabulary additions.
+(`ext_<name>`) to avoid colliding with future canonical vocabulary additions. The
+Agent Workpad Protocol (Section 11.8.2) consumes this vocabulary verbatim: the
+agent renders whichever token the orchestrator wrote into the §13.1 log line and
+does not invent its own tokens.
 
 ### 13.2 Logging Outputs and Sinks
 
@@ -3270,7 +3413,39 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - CLI exits with success when application starts and shuts down normally
 - CLI exits nonzero when startup fails or the host process exits abnormally
 
-### 17.8 Real Integration Profile (RECOMMENDED)
+### 17.8 Agent Workpad Protocol (when enabled)
+
+Required when `agent.workpad.enabled: true` (Section 11.8.9):
+
+- When `agent.workpad.enabled: false`, the prompt context MUST NOT contain
+  `thread_id`, `dispatched_at`, `model`, `subject_id`, or `prior_sessions`. A
+  template that references any of those variables under strict-mode rendering
+  (Section 12.2) MUST fail to render.
+- When `agent.workpad.enabled: true` AND `issue.kind ∈ {"issue", "pull_request"}`,
+  all five prompt variables MUST be present and non-empty (with `prior_sessions`
+  possibly empty list on first dispatch).
+- When `agent.workpad.enabled: true` AND `issue.kind == "draft_issue"`, the five
+  variables MUST be absent and the template MUST tolerate their absence
+  (Section 11.8 item-kind scope).
+- The `completed` map (Section 4.1.8) MUST retain at least the K most recent
+  per-session records per issue when the protocol is enabled, where K matches
+  `agent.workpad.max_sessions_visible` (default 20). Older entries MAY be pruned.
+- Each stored session record MUST carry: `thread_id`, `attempt`, `dispatched_at`,
+  `completed_at`, `duration_ms`, `model`, `stop_reason`. `stop_reason` MUST come
+  from the §13.1 worker-stop reason vocabulary.
+- Discovery (Section 11.8.1) MUST paginate the comment list until the marker is
+  found or `pageInfo.hasNextPage` is false. A test that creates 101 comments and
+  places the marker in the first one MUST locate it.
+- Discovery MUST tolerate multiple workpad comments by selecting
+  `(createdAt DESC, databaseId DESC)`.
+- `updateIssueComment` MUST be present in the mutation allowlist (Section 18.2.1)
+  when the protocol is enabled, and MUST be rejected when it is not.
+- A workflow template that opts into the protocol MUST be exercised in a
+  round-trip test: orchestrator dispatch → prompt render → simulated agent comment
+  containing the marker → orchestrator re-dispatch → prior_sessions reflects the
+  prior run.
+
+### 17.9 Real Integration Profile (RECOMMENDED)
 
 These checks are RECOMMENDED for production readiness and MAY be skipped in CI when credentials,
 network access, or external service permissions are unavailable.
@@ -3385,7 +3560,7 @@ with a `mutation_unparseable` error rather than passing it through.
 
 ### 18.3 Operational Validation Before Production (RECOMMENDED)
 
-- Run the `Real Integration Profile` from Section 17.8 with valid credentials and network access.
+- Run the `Real Integration Profile` from Section 17.9 with valid credentials and network access.
 - Verify hook execution and workflow path resolution on the target host OS/shell environment.
 - If the OPTIONAL HTTP server is shipped, verify the configured port behavior and loopback/default
   bind expectations on the target environment.
