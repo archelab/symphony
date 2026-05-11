@@ -3,20 +3,20 @@ defmodule SymphonyElixirWeb.ObservabilityPubSub do
   PubSub helpers for observability dashboard updates.
   """
 
-  @pubsub SymphonyElixir.PubSub
+  @default_pubsub SymphonyElixir.PubSub
   @topic "observability:dashboard"
   @update_message :observability_updated
 
-  @spec subscribe() :: :ok | {:error, {:already_registered, pid()}}
-  def subscribe do
-    Phoenix.PubSub.subscribe(@pubsub, @topic)
+  @spec subscribe(atom()) :: :ok | {:error, {:already_registered, pid()}}
+  def subscribe(pubsub \\ @default_pubsub) do
+    Phoenix.PubSub.subscribe(pubsub, @topic)
   end
 
-  @spec broadcast_update() :: :ok | {:error, term()}
-  def broadcast_update do
-    case Process.whereis(@pubsub) do
+  @spec broadcast_update(atom()) :: :ok | {:error, term()}
+  def broadcast_update(pubsub \\ @default_pubsub) do
+    case Process.whereis(pubsub) do
       pid when is_pid(pid) ->
-        Phoenix.PubSub.broadcast(@pubsub, @topic, @update_message)
+        Phoenix.PubSub.broadcast(pubsub, @topic, @update_message)
 
       _ ->
         :ok

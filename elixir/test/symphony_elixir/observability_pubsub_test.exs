@@ -10,19 +10,16 @@ defmodule SymphonyElixir.ObservabilityPubSubTest do
   end
 
   test "broadcast_update is a no-op when pubsub is unavailable" do
-    pubsub_child_id = Phoenix.PubSub.Supervisor
+    # Use a unique, unregistered PubSub name so we exercise the no-op branch
+    # without touching the global SymphonyElixir.PubSub registry. Terminating
+    # the global PubSub child would race with other test modules running in
+    # parallel (mix test_strict max_cases=8) that call subscribe/broadcast,
+    # causing `ArgumentError: unknown registry: SymphonyElixir.PubSub` and
+    # cascading supervisor failures.
+    missing_pubsub = :"missing_pubsub_#{System.unique_integer([:positive])}"
 
-    on_exit(fn ->
-      if Process.whereis(SymphonyElixir.PubSub) == nil do
-        assert {:ok, _pid} =
-                 Supervisor.restart_child(SymphonyElixir.Supervisor, pubsub_child_id)
-      end
-    end)
+    refute Process.whereis(missing_pubsub)
 
-    assert is_pid(Process.whereis(SymphonyElixir.PubSub))
-    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, pubsub_child_id)
-    refute Process.whereis(SymphonyElixir.PubSub)
-
-    assert :ok = ObservabilityPubSub.broadcast_update()
+    assert :ok = ObservabilityPubSub.broadcast_update(missing_pubsub)
   end
 end
