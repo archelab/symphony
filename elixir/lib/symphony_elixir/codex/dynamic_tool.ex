@@ -3,6 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
+  alias SymphonyElixir.Codex.GithubGraphqlTool
   alias SymphonyElixir.Linear.Client
 
   @linear_graphql_tool "linear_graphql"
@@ -26,11 +27,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   }
 
+  @github_graphql_tool "github_graphql"
+
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
     case tool do
       @linear_graphql_tool ->
         execute_linear_graphql(arguments, opts)
+
+      @github_graphql_tool ->
+        execute_github_graphql(arguments)
 
       other ->
         failure_response(%{
@@ -44,13 +50,80 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   @spec tool_specs() :: [map()]
   def tool_specs do
+    %{name: gh_name, description: gh_desc, parameters: gh_params} = GithubGraphqlTool.definition()
+
     [
       %{
         "name" => @linear_graphql_tool,
         "description" => @linear_graphql_description,
         "inputSchema" => @linear_graphql_input_schema
+      },
+      %{
+        "name" => gh_name,
+        "description" => gh_desc,
+        "inputSchema" => gh_params
       }
     ]
+  end
+
+  defp execute_github_graphql(arguments) when is_map(arguments) do
+    args =
+      arguments
+      |> Map.new(fn {k, v} -> {to_string(k), v} end)
+
+    case GithubGraphqlTool.handle(args) do
+      {:ok, response} -> graphql_response(response)
+      {:error, reason} -> failure_response(github_error_payload(reason))
+    end
+  end
+
+  defp execute_github_graphql(arguments) when is_binary(arguments) do
+    case String.trim(arguments) do
+      "" ->
+        failure_response(%{
+          "error" => %{
+            "message" => "`github_graphql` requires a non-empty `query` string."
+          }
+        })
+
+      query ->
+        execute_github_graphql(%{"query" => query})
+    end
+  end
+
+  defp execute_github_graphql(_other) do
+    failure_response(%{
+      "error" => %{
+        "message" => "`github_graphql` expects either a GraphQL query string or an object with `query` and optional `variables`."
+      }
+    })
+  end
+
+  defp github_error_payload({:mutation_not_allowed, name}) do
+    %{
+      "error" => %{
+        "message" => "`github_graphql` rejected mutation `#{name}`; not on the configured allowlist.",
+        "mutation" => name
+      }
+    }
+  end
+
+  defp github_error_payload({:mutation_unparseable, detail}) do
+    %{
+      "error" => %{
+        "message" => "`github_graphql` could not parse the mutation document.",
+        "detail" => to_string(detail)
+      }
+    }
+  end
+
+  defp github_error_payload(reason) do
+    %{
+      "error" => %{
+        "message" => "GitHub GraphQL tool execution failed.",
+        "reason" => inspect(reason)
+      }
+    }
   end
 
   defp execute_linear_graphql(arguments, opts) do

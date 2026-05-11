@@ -33,8 +33,15 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
   end
 
   test "resolves $GITHUB_TOKEN env reference" do
+    previous = System.get_env("GITHUB_TOKEN")
     System.put_env("GITHUB_TOKEN", "ghp_resolved")
-    on_exit(fn -> System.delete_env("GITHUB_TOKEN") end)
+
+    on_exit(fn ->
+      case previous do
+        nil -> System.delete_env("GITHUB_TOKEN")
+        value -> System.put_env("GITHUB_TOKEN", value)
+      end
+    end)
 
     config = %{
       "tracker" => %{
@@ -121,8 +128,15 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
   end
 
   test "rejects github kind with empty api_token after env resolution" do
+    previous = System.get_env("GITHUB_TOKEN")
     System.put_env("GITHUB_TOKEN", "")
-    on_exit(fn -> System.delete_env("GITHUB_TOKEN") end)
+
+    on_exit(fn ->
+      case previous do
+        nil -> System.delete_env("GITHUB_TOKEN")
+        value -> System.put_env("GITHUB_TOKEN", value)
+      end
+    end)
 
     config = %{
       "tracker" => %{

@@ -743,8 +743,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+    last_run_completed_at = get_in(state.completed, [issue.id, :completed_at])
+
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient,
+             attempt: attempt,
+             worker_host: worker_host,
+             last_run_completed_at: last_run_completed_at
+           )
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
