@@ -2,15 +2,26 @@
 # E2E-10: Agent Workpad Protocol round-trip (SPEC §11.8).
 #
 # 1. Swap WORKFLOW.md for a workpad-enabled variant (built per-run from
-#    workflow.smoke.md + WORKFLOW.workpad.example.md fragments).
+#    workflow.smoke.md + WORKFLOW.workpad.example.md fragments — both the
+#    `agent.workpad` config block AND the prompt-template section that
+#    references {{ thread_id }}/prior_sessions are injected).
 # 2. Create a fresh issue with AGENT PRIORITY INSTRUCTIONS to post a v1
 #    workpad comment containing the orchestrator-supplied {{ thread_id }},
 #    {{ model }}, etc.
 # 3. Set Status → Agent Ready. Wait for orchestrator dispatch + workpad
 #    marker on the issue.
 # 4. Flip Status → Done (terminal reconcile), then Rework (re-dispatch).
-# 5. Read the latest Codex rollout JSONL and confirm the second prompt
-#    rendered with the first session's thread_id under prior_sessions[0].
+# 5. Wait for the SECOND `Dispatching` log line for this issue, then read
+#    the corresponding Codex rollout JSONL and confirm the FIRST session's
+#    thread_id (sourced from the orchestrator log's `session_id=` field,
+#    NOT from the agent's comment body) appears in the second prompt's
+#    `Prior sessions` rendering.
+#
+# §11.8.8 truthfulness: the agent's workpad body is best-effort and may
+# contain placeholder/`unknown` values when the smoke-mode model fails to
+# bind `{{ thread_id }}`. The orchestrator's §13.1 structured log is the
+# authoritative session history, so verification reads thread_id from
+# `session_id=<thread_id>-<turn_id>` lines in `elixir/log/symphony.log.*`.
 #
 # Requires a capable model to follow the in-prompt workpad instruction. The
 # smoke-mode workflow uses gpt-5.4-mini at minimal reasoning which usually
@@ -25,9 +36,9 @@ REASON="${SYMPHONY_E2E_E2E10_REASON:-low}"
 MAX_TURNS="${SYMPHONY_E2E_E2E10_MAX_TURNS:-2}"
 
 # Build the per-case WORKFLOW.md by augmenting workflow.smoke.md with the
-# workpad block + a stronger model. We write directly into the canonical
-# WORKFLOW.md slot (run.sh has already swapped the smoke variant in) and
-# restore on EXIT.
+# workpad config block + prompt section + a stronger model. We write
+# directly into the canonical WORKFLOW.md slot (run.sh has already swapped
+# the smoke variant in) and restore on EXIT.
 WORKFLOW="$E2E_ELIXIR_DIR/WORKFLOW.md"
 BACKUP="$WORKFLOW.e2e10_bak"
 cp "$WORKFLOW" "$BACKUP"
@@ -75,6 +86,30 @@ awk -v model="$MODEL" '
 ' "$WORKFLOW" > "$WORKFLOW.aug"
 mv "$WORKFLOW.aug" "$WORKFLOW"
 
+# Append the workpad PROMPT section so the agent actually sees
+# `{{ thread_id }}` / `{{ prior_sessions }}` substitutions. Without this,
+# prompt_builder emits the workpad vars but the template never renders
+# them and the agent guesses literal "unknown".
+cat >>"$WORKFLOW" <<'WORKPAD_PROMPT'
+
+## Agent Workpad Protocol (SPEC §11.8)
+
+You have a cross-session workpad — a single GitHub Issue/PullRequest comment
+identified by an HTML marker. Manage it via the `github_graphql` tool.
+
+**On first turn, append your row to the sessions table:**
+
+| `{{ thread_id }}` | {{ attempt }} | {{ dispatched_at }} | {{ model }} |
+
+{% if prior_sessions %}
+**Prior sessions** (most recent first; orchestrator-authoritative — do not invent values):
+
+{% for s in prior_sessions %}
+- `{{ s.thread_id }}` attempt={{ s.attempt }} dispatched={{ s.dispatched_at }} model={{ s.model }} stop_reason={{ s.stop_reason }}
+{% endfor %}
+{% endif %}
+WORKPAD_PROMPT
+
 # Assert the awk transform actually fired. If the smoke workflow ever
 # changes its YAML top-level anchors (e.g. indented under another block),
 # the awk pass silently no-ops and e2e-10 would run with the wrong config.
@@ -82,8 +117,15 @@ grep -q '^  workpad:$' "$WORKFLOW" || e2e::verdict_fail \
   "WORKFLOW augmentation failed: workpad: block not injected (smoke YAML changed?)"
 grep -q "^  model: \"$MODEL\"\$" "$WORKFLOW" || e2e::verdict_fail \
   "WORKFLOW augmentation failed: codex.model not injected"
+grep -q "Agent Workpad Protocol (SPEC §11.8)" "$WORKFLOW" || e2e::verdict_fail \
+  "WORKFLOW augmentation failed: workpad prompt section not appended"
 
-e2e::start_orchestrator "$E2E_LOG_DIR/run.log"
+ORCH_LOG="$E2E_LOG_DIR/run.log"
+e2e::start_orchestrator "$ORCH_LOG"
+
+# Capture the timestamp BEFORE creating the issue so we can later filter
+# the orchestrator's symphony.log to events after this run started.
+RUN_START_EPOCH=$(date +%s)
 
 # Create issue with placeholder body; we edit the body to include the
 # just-created node id for the AGENT PRIORITY INSTRUCTION.
@@ -93,7 +135,10 @@ read -r ISSUE_NUM ISSUE_NODE_ID < <(e2e::create_test_issue "[smoke] E2E-10 workp
 # The workpad-enabled prompt template already instructs the agent to find
 # or create a workpad comment via `addComment` with the v1 marker. The
 # body below adds an explicit priority instruction so the smoke-mode
-# model (which usually ignores templates) does the right thing.
+# model (which usually ignores templates) does the right thing. The agent
+# is told to use the orchestrator-supplied {{ thread_id }} verbatim; if it
+# writes `unknown` instead, that is a §11.8.8 truthfulness violation that
+# the orchestrator-log cross-check below will catch.
 BODY="Smoke test. AGENT PRIORITY INSTRUCTION: Post a single comment to this issue via the github_graphql tool. The comment body MUST begin with the line:
 
 <!-- symphony-workpad:v1 -->
@@ -119,16 +164,13 @@ e2e::wait_for_log_line "Dispatching issue to agent.*$IDENT" 60 || \
   e2e::verdict_fail "never dispatched first time"
 
 # Poll the issue comments until a v1 workpad marker appears (~150s budget).
+# The marker is REQUIRED — without it, the round-trip has nothing to round.
 elapsed=0
-first_thread_id=""
+marker_body=""
 while (( elapsed < 150 )); do
   comments_json=$(gh issue view "$ISSUE_NUM" -R "$SYMPHONY_E2E_PROJECT_OWNER/$SYMPHONY_E2E_REPO" --json comments 2>/dev/null || echo '{}')
-  marker_body=$(jq -r '.comments[]?.body | select(. != null) | select(contains("<!-- symphony-workpad:v1 -->"))' <<<"$comments_json" | head -1)
+  marker_body=$(jq -r '.comments[]?.body | select(. != null) | select(contains("<!-- symphony-workpad:v1 -->"))' <<<"$comments_json" | awk 'NR==1{print; exit}')
   if [[ -n "$marker_body" ]]; then
-    # Try to extract the first thread_id the agent wrote into the comment.
-    # The exact shape is agent-controlled, so we accept any non-trivial
-    # alphanumeric/dash token after the literal "thread_id" word.
-    first_thread_id=$(printf '%s' "$marker_body" | grep -ioE 'thread[_-]?id[^a-z0-9_-]+[a-z0-9_-]{6,}' | head -1 | sed -E 's/.*[^a-z0-9_-]([a-z0-9_-]{6,})$/\1/' || true)
     break
   fi
   sleep 5
@@ -139,45 +181,142 @@ if [[ -z "$marker_body" ]]; then
   e2e::verdict_partial "no v1 workpad marker on issue within 150s — agent did not post workpad. Likely smoke-mode model ignored instructions."
 fi
 
-echo "first_workpad_body=$(printf '%s' "$marker_body" | head -c 200)"
-echo "first_thread_id_guess=$first_thread_id"
+echo "first_workpad_body_head=$(printf '%s' "$marker_body" | awk 'NR==1{printf "%.200s", $0; exit}')"
 
 # Wait for first turn to exit cleanly.
 e2e::wait_for_log_line "worker stop reason=:agent_exit_normal issue_id=\"$ITEM_ID\"" 60 || \
   e2e::verdict_partial "first turn never logged agent_exit_normal (workpad already posted; check terminal reconcile path)"
 
+# §11.8.8 authoritative source: extract the FIRST session's thread_id from
+# the orchestrator's structured log. `log_worker_stop`/`Codex session
+# started` lines emit `session_id=<thread_id>-<turn_id>` where thread_id
+# is a UUIDv7 (see codex/app_server.ex). We pull the session_id for THIS
+# issue, take the first 5-segment UUID, and treat that as the canonical
+# first thread_id. Sourcing from orch.log (not agent body) closes wave-2
+# review NIT 1 (brittle regex) and matches §11.8.8 truthfulness.
+SYMPHONY_LOG=$(e2e::current_log)
+if [[ -z "$SYMPHONY_LOG" || ! -f "$SYMPHONY_LOG" ]]; then
+  e2e::verdict_fail "no symphony.log found via e2e::current_log"
+fi
+
+# The session_id format is `<uuidv7-thread>-<uuidv7-turn>` per
+# codex/app_server.ex:93. We pin the regex to the exact 5-segment UUIDv7
+# shape (8-4-4-4-12 hex) for the FIRST segment and stop matching there.
+FIRST_THREAD_ID=$(grep -aE "Codex session started for issue_id=$ITEM_ID " "$SYMPHONY_LOG" \
+  | head -1 \
+  | grep -oE 'session_id=[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' \
+  | head -1 \
+  | sed -E 's/^session_id=//' || true)
+
+if [[ -z "$FIRST_THREAD_ID" ]]; then
+  e2e::verdict_fail "could not extract first thread_id from orchestrator log (looked for 'Codex session started for issue_id=$ITEM_ID' in $SYMPHONY_LOG). Orchestrator-side regression — §11.8.8 authoritative log missing thread_id."
+fi
+echo "first_thread_id (orchestrator-authoritative)=$FIRST_THREAD_ID"
+
 # Flip Status → Done to drive terminal reconcile (clean break before Rework).
 e2e::set_status "$ITEM_ID" "Done"
 sleep 6
+
+# Mark the cutoff time for second-dispatch detection. Any `Dispatching`
+# line for this issue with a timestamp at or after this cutoff is the
+# Rework re-dispatch.
+REWORK_CUTOFF_EPOCH=$(date +%s)
 
 # Flip Status → Rework to trigger a second dispatch.
 e2e::set_status "$ITEM_ID" "Rework"
 echo "flipped to Rework — waiting for second dispatch"
 
-# Second dispatch — should re-render the prompt with prior_sessions[0].
-# `wait_for_log_line` matches any new occurrence; the orchestrator logs a
-# new "Dispatching issue to agent" line per dispatch.
-sleep 15
+# Wait for the orchestrator to dispatch a SECOND time. We try TWO
+# evidence channels because under heavy Codex notification flow the
+# `:logger_disk_log_h` async handler can enter drop-mode and silently
+# discard info-level messages from symphony.log:
+#
+#   1) Authoritative: a fresh `Codex session started for issue_id=ITEM_ID`
+#      line in symphony.log with a DIFFERENT thread_id from FIRST_THREAD_ID.
+#   2) Fallback: a new `rollout-*-<thread_id>.jsonl` file in
+#      ~/.codex/sessions newer than FIRST_THREAD_ID's rollout. Codex
+#      writes rollouts independently of the orchestrator's Elixir logger.
+#
+# Either channel proves the second dispatch fired.
+SECOND_DISPATCH_DEADLINE=$(( REWORK_CUTOFF_EPOCH + 120 ))
+SECOND_THREAD_ID=""
+SECOND_ROLL=""
 
-# Read the latest Codex rollout JSONL and confirm the first session's
-# thread_id appears in the second prompt's prior_sessions context.
-ROLL=$(/bin/ls -t "$HOME/.codex/sessions/"*/*/*/rollout-*.jsonl 2>/dev/null | head -1)
-if [[ -z "$ROLL" ]]; then
-  e2e::verdict_fail "no rollout file under ~/.codex/sessions"
+# Resolve the FIRST rollout's epoch mtime as the cutoff for "newer than".
+FIRST_ROLL=""
+while IFS= read -r -d '' candidate; do
+  FIRST_ROLL="$candidate"
+  break
+done < <(find "$HOME/.codex/sessions" -type f -name "rollout-*-${FIRST_THREAD_ID}.jsonl" -print0 2>/dev/null)
+FIRST_ROLL_MTIME=0
+if [[ -n "$FIRST_ROLL" ]]; then
+  FIRST_ROLL_MTIME=$(stat -f '%m' "$FIRST_ROLL" 2>/dev/null || stat -c '%Y' "$FIRST_ROLL" 2>/dev/null || echo 0)
 fi
 
-echo "latest rollout: $ROLL"
-
-# The workpad-enabled template emits a "Prior sessions" header + a bullet
-# per record under `{% for s in prior_sessions %}`. The second dispatch's
-# rollout must contain at least one such bullet referencing a thread_id.
-if grep -aq "Prior sessions" "$ROLL" && grep -aqE "thread_id=" "$ROLL"; then
-  if [[ -n "$first_thread_id" ]] && grep -aq "$first_thread_id" "$ROLL"; then
-    echo "OK: second prompt contains prior_sessions section + first thread_id $first_thread_id"
-    e2e::verdict_pass
-  else
-    e2e::verdict_partial "Prior sessions header rendered but first thread_id ($first_thread_id) not located in $ROLL"
+while (( $(date +%s) < SECOND_DISPATCH_DEADLINE )); do
+  # Channel 1: scan symphony.log for a new thread_id on this issue.
+  latest_line=$(grep -aE "Codex session started for issue_id=$ITEM_ID " "$SYMPHONY_LOG" | tail -1 || true)
+  if [[ -n "$latest_line" ]]; then
+    latest_thread=$(printf '%s' "$latest_line" \
+      | grep -oE 'session_id=[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' \
+      | sed -E 's/^session_id=//' || true)
+    if [[ -n "$latest_thread" && "$latest_thread" != "$FIRST_THREAD_ID" ]]; then
+      SECOND_THREAD_ID="$latest_thread"
+      break
+    fi
   fi
+
+  # Channel 2: any rollout newer than the first one signals a second
+  # codex session started. Take the newest rollout that isn't FIRST_ROLL.
+  while IFS= read -r -d '' candidate; do
+    cand_mtime=$(stat -f '%m' "$candidate" 2>/dev/null || stat -c '%Y' "$candidate" 2>/dev/null || echo 0)
+    if (( cand_mtime > FIRST_ROLL_MTIME )) && [[ "$candidate" != "$FIRST_ROLL" ]]; then
+      SECOND_ROLL="$candidate"
+      # Extract thread_id from filename: rollout-<ts>-<thread_id>.jsonl
+      SECOND_THREAD_ID=$(basename "$candidate" \
+        | sed -E 's/^rollout-[0-9T:-]+-([a-f0-9-]+)\.jsonl$/\1/')
+      break
+    fi
+  done < <(find "$HOME/.codex/sessions" -type f -name "rollout-*.jsonl" -print0 2>/dev/null)
+
+  if [[ -n "$SECOND_THREAD_ID" ]]; then
+    break
+  fi
+  sleep 3
+done
+
+if [[ -z "$SECOND_THREAD_ID" ]]; then
+  e2e::verdict_partial "second dispatch never observed within 120s after Rework flip (first thread_id=$FIRST_THREAD_ID). No new Codex session in symphony.log AND no new rollout JSONL under \$HOME/.codex/sessions. Orchestrator did not re-dispatch on Rework — could be smoke-mode race, a real Rework regression, or symphony.log handler in overload-drop mode masking the dispatch."
+fi
+echo "second_thread_id (orchestrator-authoritative)=$SECOND_THREAD_ID"
+
+# Locate the SECOND rollout JSONL by thread id if we haven't already.
+if [[ -z "$SECOND_ROLL" ]]; then
+  while IFS= read -r -d '' candidate; do
+    SECOND_ROLL="$candidate"
+    break
+  done < <(find "$HOME/.codex/sessions" -type f -name "rollout-*-${SECOND_THREAD_ID}.jsonl" -print0 2>/dev/null)
+fi
+
+if [[ -z "$SECOND_ROLL" ]]; then
+  e2e::verdict_partial "second rollout JSONL not found for thread_id=$SECOND_THREAD_ID under \$HOME/.codex/sessions. Orchestrator dispatched but Codex rollout absent — likely codex CLI not writing rollouts in this env."
+fi
+echo "second rollout: $SECOND_ROLL"
+
+# The second dispatch's prompt MUST contain the first session's thread_id
+# rendered under `Prior sessions` — see WORKFLOW.workpad.example.md:164:
+#   - `{{ s.thread_id }}` attempt={{ s.attempt }} ...
+# After Solid render, the literal token is the bare UUIDv7 (no backticks
+# inside JSON because the rollout stores the rendered text in
+# `payload.message`/`payload.content[].text`). Grep for the first thread
+# id appearing in the rollout — that's spec-aligned proof of round-trip.
+if grep -aq "Prior sessions" "$SECOND_ROLL" && grep -aq "$FIRST_THREAD_ID" "$SECOND_ROLL"; then
+  echo "OK: second prompt contains 'Prior sessions' header AND first thread_id $FIRST_THREAD_ID"
+  e2e::verdict_pass
 else
-  e2e::verdict_fail "Prior sessions section not in latest rollout ($ROLL)"
+  if ! grep -aq "Prior sessions" "$SECOND_ROLL"; then
+    e2e::verdict_fail "second rollout ($SECOND_ROLL) missing 'Prior sessions' header — workpad prompt section not rendered on Rework re-dispatch."
+  else
+    e2e::verdict_fail "second rollout ($SECOND_ROLL) has 'Prior sessions' but first thread_id ($FIRST_THREAD_ID) absent — orchestrator did not pass prior_sessions[0] to prompt_builder."
+  fi
 fi
