@@ -197,6 +197,11 @@ flow through the agent's `addComment` / `updateIssueComment` calls, gated by the
 five workpad variables are emitted, so the stock `WORKFLOW.md` shipped with this repo renders
 under Solid strict mode without referencing them.
 
+**Operational caveats:** workpad rows are agent-self-reported snapshots, not audit records
+(SPEC §11.8.8) — cross-reference the orchestrator's §13.1 structured logs when a workpad row
+disagrees with observed behavior. Running multiple orchestrators against the same Project is
+unsupported (SPEC §11.8.7); concurrent writes against the same comment are last-write-wins.
+
 ## Web dashboard
 
 The observability UI now runs on a minimal Phoenix stack:

@@ -25,9 +25,12 @@ defmodule SymphonyElixir.Config.WorkpadTest do
     assert settings.agent.workpad.update_throttle_turns == 3
   end
 
-  test "agent.workpad accepts enabled override" do
+  test "agent.workpad accepts enabled override (with codex.model per SPEC §11.8.5)" do
     assert {:ok, settings} =
-             parse(%{"agent" => %{"workpad" => %{"enabled" => true}}})
+             parse(%{
+               "agent" => %{"workpad" => %{"enabled" => true}},
+               "codex" => %{"model" => "gpt-5.5"}
+             })
 
     assert settings.agent.workpad.enabled == true
   end

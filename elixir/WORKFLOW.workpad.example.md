@@ -170,6 +170,13 @@ On voluntary final-turn completion: update your row's Ended/Duration/Stop reason
 (use `agent_exit_normal` unless you know otherwise) AND archive your "Current session"
 body under a `### Session {{ thread_id }} notes` heading.
 
+**Rate-limit handling (SPEC §11.8.6):** the workpad is best-effort. If `addComment` or
+`updateIssueComment` returns a secondary-throttle `Retry-After` header, honour it and
+SKIP the workpad write for the current turn rather than retrying in a tight loop. On
+primary-quota exhaustion (`rateLimit.resetAt`), wait for reset before the next attempt.
+The orchestrator's §13.1 structured logs remain the authoritative session record while
+the workpad is unwritable.
+
 ## Stopping conditions
 
 This is an unattended orchestration session. Stop early only for:
