@@ -120,7 +120,8 @@ defmodule SymphonyElixir.GithubLiveTest do
       tracker_repo: "symphony",
       tracker_active_states: ["Agent Ready", "In Progress", "Rework"],
       tracker_terminal_states: ["Done"],
-      agent_workpad_enabled: true
+      agent_workpad_enabled: true,
+      codex_model: "gpt-5.5"
     )
 
     title = "[workpad-live-test] addComment + updateIssueComment round-trip #{System.unique_integer([:positive])}"

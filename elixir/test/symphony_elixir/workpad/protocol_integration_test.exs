@@ -75,8 +75,9 @@ defmodule SymphonyElixir.Workpad.ProtocolIntegrationTest do
     dispatched_at = DateTime.to_iso8601(started_at)
 
     # 3. Plant a running entry shaped exactly like
-    # `spawn_issue_on_worker_host/5` produces, plus the thread_id that the
-    # `:codex_thread_started` handler writes after `AppServer.start_session/2`.
+    # `spawn_issue_on_worker_host/5` produces, but with thread_id nil — that
+    # field is filled in by the `:codex_thread_started` handler once
+    # `AppServer.start_session/2` returns.
     running_entry = %{
       pid: self(),
       ref: ref,
@@ -84,7 +85,7 @@ defmodule SymphonyElixir.Workpad.ProtocolIntegrationTest do
       issue: issue,
       started_at: started_at,
       dispatched_at: dispatched_at,
-      thread_id: first_thread_id,
+      thread_id: nil,
       model: model,
       retry_attempt: 0
     }
@@ -95,6 +96,16 @@ defmodule SymphonyElixir.Workpad.ProtocolIntegrationTest do
       |> Map.put(:claimed, MapSet.new([issue_id]))
       |> Map.put(:retry_attempts, %{})
     end)
+
+    # 3a. Simulate the AgentRunner's post-start_session message that promotes
+    # the Codex thread id into the running entry. Direct wire-up test for
+    # the `:codex_thread_started` handler in Orchestrator. SPEC §11.8.5
+    # requires thread_id be available before the first turn.
+    send(pid, {:codex_thread_started, issue_id, first_thread_id})
+    Process.sleep(20)
+
+    state_with_thread = :sys.get_state(pid)
+    assert %{thread_id: ^first_thread_id} = Map.fetch!(state_with_thread.running, issue_id)
 
     # 4. Simulate normal worker exit (`:agent_exit_normal` per SPEC §13.1).
     send(pid, {:DOWN, ref, :process, self(), :normal})

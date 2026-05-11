@@ -396,16 +396,33 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  defp validate_finalized_settings(%{tracker: %{kind: "github", api_token: token}})
-       when is_binary(token) and token != "" do
-    :ok
+  defp validate_finalized_settings(settings) do
+    with :ok <- validate_tracker_api_token(settings) do
+      validate_workpad_requires_model(settings)
+    end
   end
 
-  defp validate_finalized_settings(%{tracker: %{kind: "github"}}) do
-    {:error, "tracker.api_token missing_tracker_api_token"}
-  end
+  defp validate_tracker_api_token(%{tracker: %{kind: "github", api_token: token}})
+       when is_binary(token) and token != "",
+       do: :ok
 
-  defp validate_finalized_settings(_settings), do: :ok
+  defp validate_tracker_api_token(%{tracker: %{kind: "github"}}),
+    do: {:error, "tracker.api_token missing_tracker_api_token"}
+
+  defp validate_tracker_api_token(_settings), do: :ok
+
+  # SPEC §11.8.5: `model` is a REQUIRED prompt variable when the workpad is
+  # enabled — its value MUST match what the agent self-reports. We refuse to
+  # boot with `agent.workpad.enabled: true` and `codex.model` unset rather
+  # than silently render an empty `model` cell in every workpad row.
+  defp validate_workpad_requires_model(%{agent: %{workpad: %{enabled: true}}, codex: %{model: model}})
+       when is_binary(model) and model != "",
+       do: :ok
+
+  defp validate_workpad_requires_model(%{agent: %{workpad: %{enabled: true}}}),
+    do: {:error, "agent.workpad.enabled requires codex.model to be set (SPEC §11.8.5)"}
+
+  defp validate_workpad_requires_model(_settings), do: :ok
 
   @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do

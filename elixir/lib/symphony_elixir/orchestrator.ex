@@ -948,7 +948,10 @@ defmodule SymphonyElixir.Orchestrator do
     started_at = DateTime.utc_now()
     dispatched_at = DateTime.to_iso8601(started_at)
     model = codex_model_snapshot()
-    prior_sessions = Map.get(state.completed, issue.id, [])
+    # Belt-and-braces: `prune_sessions/1` already caps at `max_sessions/0` on
+    # every write, but a future write path that bypassed pruning would let
+    # the agent's prompt grow unbounded. Apply the same cap on read.
+    prior_sessions = state.completed |> Map.get(issue.id, []) |> Enum.take(max_sessions())
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient,

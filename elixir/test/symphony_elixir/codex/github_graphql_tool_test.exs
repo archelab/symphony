@@ -56,7 +56,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path(), agent_workpad_enabled: true)
+    write_workflow_file!(Workflow.workflow_file_path(), agent_workpad_enabled: true, codex_model: "gpt-5.5")
 
     assert {:ok, %{"data" => %{"updateIssueComment" => _}}} =
              GithubGraphqlTool.handle(%{
@@ -95,7 +95,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
       Application.delete_env(:symphony_elixir, :github_graphql_mutation_allowlist)
     end)
 
-    write_workflow_file!(Workflow.workflow_file_path(), agent_workpad_enabled: true)
+    write_workflow_file!(Workflow.workflow_file_path(), agent_workpad_enabled: true, codex_model: "gpt-5.5")
 
     assert {:ok, %{"data" => %{"updateIssueComment" => _}}} =
              GithubGraphqlTool.handle(%{

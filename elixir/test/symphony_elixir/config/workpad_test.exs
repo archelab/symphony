@@ -73,4 +73,23 @@ defmodule SymphonyElixir.Config.WorkpadTest do
     assert {:ok, settings} = parse(%{"codex" => %{"model" => "gpt-5.5"}})
     assert settings.codex.model == "gpt-5.5"
   end
+
+  test "agent.workpad.enabled requires codex.model to be set (SPEC §11.8.5)" do
+    assert {:error, {:invalid_workflow_config, msg}} =
+             parse(%{"agent" => %{"workpad" => %{"enabled" => true}}})
+
+    assert msg =~ "codex.model"
+    assert msg =~ "§11.8.5"
+  end
+
+  test "agent.workpad.enabled accepts a config that also sets codex.model (SPEC §11.8.5)" do
+    assert {:ok, settings} =
+             parse(%{
+               "agent" => %{"workpad" => %{"enabled" => true}},
+               "codex" => %{"model" => "gpt-5.5"}
+             })
+
+    assert settings.agent.workpad.enabled == true
+    assert settings.codex.model == "gpt-5.5"
+  end
 end
