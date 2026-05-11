@@ -16,7 +16,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     {:error, {:mutation_not_allowed, name}} =
       GithubGraphqlTool.handle(%{
@@ -37,7 +37,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:ok, %{"data" => %{"addComment" => _}}} =
              GithubGraphqlTool.handle(%{
@@ -56,7 +56,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path(), agent_workpad_enabled: true, codex_model: "gpt-5.5")
+    write_github_workflow_file!(Workflow.workflow_file_path(), agent_workpad_enabled: true, codex_model: "gpt-5.5")
 
     assert {:ok, %{"data" => %{"updateIssueComment" => _}}} =
              GithubGraphqlTool.handle(%{
@@ -69,7 +69,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     # No `fake` stub installed — if the mutation slipped past the allowlist
     # we'd hit the real Client.graphql/3 and fail differently. The expected
     # path returns the allowlist rejection BEFORE the transport call.
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:error, {:mutation_not_allowed, "updateIssueComment"}} =
              GithubGraphqlTool.handle(%{
@@ -95,7 +95,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
       Application.delete_env(:symphony_elixir, :github_graphql_mutation_allowlist)
     end)
 
-    write_workflow_file!(Workflow.workflow_file_path(), agent_workpad_enabled: true, codex_model: "gpt-5.5")
+    write_github_workflow_file!(Workflow.workflow_file_path(), agent_workpad_enabled: true, codex_model: "gpt-5.5")
 
     assert {:ok, %{"data" => %{"updateIssueComment" => _}}} =
              GithubGraphqlTool.handle(%{
@@ -114,7 +114,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
   end
 
   test "rejects deleteIssueComment — workpad is append-only at the row level (SPEC §11.8.4)" do
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:error, {:mutation_not_allowed, "deleteIssueComment"}} =
              GithubGraphqlTool.handle(%{
@@ -124,7 +124,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
   end
 
   test "rejects multi-mutation document where any field is not allowlisted" do
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     {:error, {:mutation_not_allowed, name}} =
       GithubGraphqlTool.handle(%{
@@ -150,7 +150,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:ok, _} =
              GithubGraphqlTool.handle(%{
@@ -160,7 +160,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
   end
 
   test "rejects malformed mutation with mutation_unparseable" do
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:error, {:mutation_unparseable, _}} =
              GithubGraphqlTool.handle(%{"query" => "mutation Op", "variables" => %{}})
@@ -174,7 +174,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:ok, _} =
              GithubGraphqlTool.handle(%{"query" => "{ viewer { login } }", "variables" => %{}})
@@ -185,7 +185,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:ok, _} =
              GithubGraphqlTool.handle(%{
@@ -195,7 +195,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
   end
 
   test "unknown top-level keyword returns mutation_unparseable" do
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:error, {:mutation_unparseable, _}} =
              GithubGraphqlTool.handle(%{
@@ -209,7 +209,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     # Nested parens inside argument literals exercise the skip_parens depth
     # counter; nested selection sets inside the outer braces exercise the
@@ -230,14 +230,14 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
   end
 
   test "empty mutation body returns mutation_unparseable" do
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:error, {:mutation_unparseable, _}} =
              GithubGraphqlTool.handle(%{"query" => "mutation {  }", "variables" => %{}})
   end
 
   test "mutation body whose only top-level field has an unclosed argument list" do
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     # The regex permits this because the outer `{...}` is balanced; the
     # internal `(` is not. `skip_parens` consumes to end-of-charlist and
@@ -258,7 +258,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
 
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:ok, _} =
              GithubGraphqlTool.handle(%{
@@ -271,7 +271,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:ok, _} =
              GithubGraphqlTool.handle(%{
@@ -284,7 +284,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:ok, _} =
              GithubGraphqlTool.handle(%{
@@ -297,7 +297,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     # The variable default string contains `{` and `}` plus an escaped quote;
     # without string-literal awareness in scan_to_outer_open_brace/2 the body
@@ -314,7 +314,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     # `#comment` at top level inside the mutation body. Without the `#` skip
     # in maybe_emit/3 the walker would treat the comment text as a field
@@ -330,7 +330,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     # Unbalanced parens INSIDE a quoted string ("oops :)") plus an escaped
     # quote — skip_parens must stay in string state until the closing `"`.
@@ -345,7 +345,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
   # legal-but-rare GraphQL forms; they do NOT mis-allow disallowed mutations.
 
   test "field alias on allowlisted mutation is currently rejected (walker limitation)" do
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
     # `local: addComment(...)` — alias before a field. Walker emits `local:` and
     # rejects against the allowlist. Tracked for future fix.
     assert {:error, {:mutation_not_allowed, alias_name}} =
@@ -361,7 +361,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"addComment" => %{}}}} end
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     # Block string literals are NOT tracked by the walker. Braces inside a
     # """...""" block string would prematurely close the body span. Tracked
@@ -379,7 +379,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
   end
 
   test "inline fragment at mutation top level is currently rejected (walker + GraphQL grammar)" do
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
     # Inline fragments at mutation top level are illegal GraphQL anyway, so the
     # rejection is desired — but it surfaces as `... on Whatever` becoming a
     # candidate "field". Document the rejection vocabulary.
@@ -401,7 +401,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
 
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_graphql_mutation_allowlist) end)
 
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:error, {:mutation_not_allowed, "addComment"}} =
              GithubGraphqlTool.handle(%{
@@ -423,7 +423,7 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path())
+    write_github_workflow_file!(Workflow.workflow_file_path())
 
     assert {:ok, %{"data" => %{"customMutation" => _}}} =
              GithubGraphqlTool.handle(%{

@@ -1,6 +1,11 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  setup do
+    write_github_workflow_file!(Workflow.workflow_file_path())
+    :ok
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -932,7 +937,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "orchestrator triggers an immediate poll cycle shortly after startup" do
-    write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 5_000)
+    write_github_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 5_000)
 
     orchestrator_name = Module.concat(__MODULE__, :ImmediateStartupOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -981,7 +986,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "orchestrator poll cycle resets next refresh countdown after a check" do
-    write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 50)
+    write_github_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 50)
 
     orchestrator_name = Module.concat(__MODULE__, :PollCycleOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -1027,7 +1032,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "orchestrator restarts stalled workers with retry backoff" do
-    write_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: 1_000)
+    write_github_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: 1_000)
 
     issue_id = "issue-stall"
     orchestrator_name = Module.concat(__MODULE__, :StallOrchestrator)
@@ -1733,7 +1738,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
 
     test "stall restart reason logs at :warning" do
-      write_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: 1_000)
+      write_github_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: 1_000)
 
       issue_id = "issue-stall-level"
       orchestrator_name = Module.concat(__MODULE__, :StallLevelOrchestrator)

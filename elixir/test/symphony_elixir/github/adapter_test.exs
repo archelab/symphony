@@ -29,7 +29,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
   end
 
   setup do
-    write_workflow_file!(Workflow.workflow_file_path(),
+    write_github_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: ["Agent Ready", "In Progress", "Rework"],
       tracker_terminal_states: ["Done"],
       tracker_include_kinds: ["issue", "pull_request"]
@@ -157,11 +157,11 @@ defmodule SymphonyElixir.Github.AdapterTest do
     Application.put_env(:symphony_elixir, :github_client, fake)
     on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
 
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_number: 1)
+    write_github_workflow_file!(Workflow.workflow_file_path(), tracker_project_number: 1)
     Adapter.invalidate_cache()
     {:ok, _} = Adapter.fetch_candidate_issues()
 
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_number: 2)
+    write_github_workflow_file!(Workflow.workflow_file_path(), tracker_project_number: 2)
     {:ok, _} = Adapter.fetch_candidate_issues()
 
     assert :counters.get(resolve_calls, 1) == 2
@@ -772,7 +772,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
   test "keep_repo? cross-owner long form keeps matching, drops mismatch" do
     # Long form via tracker.repo == "archelab/symphony" — already matches the
     # fixture issue. Switch to "otherorg/symphony" to drive the mismatch path.
-    write_workflow_file!(Workflow.workflow_file_path(),
+    write_github_workflow_file!(Workflow.workflow_file_path(),
       tracker_repo: "otherorg/symphony",
       tracker_active_states: ["Agent Ready", "In Progress"],
       tracker_terminal_states: ["Done"]
@@ -783,7 +783,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
   end
 
   test "keep_repo? long-form match still keeps matching items" do
-    write_workflow_file!(Workflow.workflow_file_path(),
+    write_github_workflow_file!(Workflow.workflow_file_path(),
       tracker_repo: "archelab/symphony",
       tracker_active_states: ["Agent Ready", "In Progress"],
       tracker_terminal_states: ["Done"]
@@ -795,7 +795,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
   end
 
   test "active? draft_issue branch dispatches drafts when included" do
-    write_workflow_file!(Workflow.workflow_file_path(),
+    write_github_workflow_file!(Workflow.workflow_file_path(),
       tracker_include_kinds: ["draft_issue"],
       tracker_active_states: ["Agent Ready"],
       tracker_terminal_states: ["Done"]
@@ -807,7 +807,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
   end
 
   test "active? terminal_state branch drops issue" do
-    write_workflow_file!(Workflow.workflow_file_path(),
+    write_github_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: ["Agent Ready"],
       tracker_terminal_states: ["Agent Ready"]
     )
@@ -820,7 +820,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
   test "active? falls through to false when state matches neither active nor terminal" do
     # PVTI_iss1's state is "Agent Ready"; if neither list contains it AND it's
     # OPEN, the cond falls through to the catch-all `true -> false` clause.
-    write_workflow_file!(Workflow.workflow_file_path(),
+    write_github_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: ["Triage"],
       tracker_terminal_states: ["Done"]
     )
@@ -831,7 +831,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
   end
 
   test "keep_repo? with empty/nil repo filter returns true" do
-    write_workflow_file!(Workflow.workflow_file_path(),
+    write_github_workflow_file!(Workflow.workflow_file_path(),
       tracker_repo: "",
       tracker_active_states: ["Agent Ready", "In Progress"],
       tracker_terminal_states: ["Done"]
@@ -905,7 +905,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
 
     Application.put_env(:symphony_elixir, :github_client, fake)
 
-    write_workflow_file!(Workflow.workflow_file_path(),
+    write_github_workflow_file!(Workflow.workflow_file_path(),
       tracker_repo: "symphony",
       tracker_active_states: ["Agent Ready"],
       tracker_terminal_states: ["Done"]

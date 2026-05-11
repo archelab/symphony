@@ -38,7 +38,14 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          write_github_workflow_file!: 1,
+          write_github_workflow_file!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0
+        ]
 
       setup do
         workflow_root =
@@ -80,6 +87,10 @@ defmodule SymphonyElixir.TestSupport do
     end
 
     :ok
+  end
+
+  def write_github_workflow_file!(path, overrides \\ []) do
+    write_workflow_file!(path, Keyword.put_new(overrides, :tracker_kind, "github"))
   end
 
   def restore_env(key, nil), do: System.delete_env(key)
@@ -125,7 +136,7 @@ defmodule SymphonyElixir.TestSupport do
     config =
       Keyword.merge(
         [
-          tracker_kind: "github",
+          tracker_kind: "memory",
           tracker_endpoint: "https://api.github.com/graphql",
           tracker_api_token: "ghp_test_token",
           tracker_owner: "archelab",

@@ -38,7 +38,7 @@ defmodule SymphonyElixir.Workpad.ProtocolIntegrationTest do
       {% endfor %}
       """
 
-    write_workflow_file!(Workflow.workflow_file_path(),
+    write_github_workflow_file!(Workflow.workflow_file_path(),
       agent_workpad_enabled: true,
       codex_model: model,
       prompt: workpad_prompt
