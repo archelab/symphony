@@ -1,11 +1,11 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single Linear issue in its workspace with Codex.
+  Executes a single GitHub Projects v2 issue in its workspace with Codex.
   """
 
   require Logger
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Github.Issue, PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 

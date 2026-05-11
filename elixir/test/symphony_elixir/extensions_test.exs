@@ -182,7 +182,18 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "tracker routes memory + github kinds; raises on unknown kind" do
-    issue = %SymphonyElixir.Tracker.Memory.Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
+    issue =
+      Issue.new(%{
+        id: "issue-1",
+        identifier: "archelab/symphony#1",
+        kind: "issue",
+        title: "Routing fixture",
+        state: "In Progress",
+        issue_state: "OPEN",
+        repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+        number: 1
+      })
+
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue, %{id: "ignored"}])
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
 
@@ -205,11 +216,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
   end
 
-  # TODO(Task 6 / Task 8): delete with linear/adapter.ex. The Linear adapter is
+  # TODO(Task 8b): delete with linear/adapter.ex. The Linear adapter is
   # unreachable in production (no callers, no behaviour), so this exhaustive
   # test exists only to satisfy itself. PR2's Linear-deletion commit removes
   # both the module and this test in one shot.
-  @tag :skip_until_task_6
+  @tag :skip_until_task_8b
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 

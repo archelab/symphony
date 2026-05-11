@@ -81,7 +81,12 @@ defmodule SymphonyElixir.Github.Adapter do
         }
         content {
           __typename
-          ... on Issue       { id number state repository { nameWithOwner } }
+          ... on Issue {
+            id number state repository { nameWithOwner }
+            trackedIssues(first: 50) {
+              nodes { id number state repository { nameWithOwner } }
+            }
+          }
           ... on PullRequest { id number state merged repository { nameWithOwner } }
           ... on DraftIssue  { id }
         }
@@ -187,10 +192,31 @@ defmodule SymphonyElixir.Github.Adapter do
       %{
         id: node["id"],
         identifier: identifier_from_refresh(node),
-        state: terminal_or_state(node, state)
+        state: terminal_or_state(node, state),
+        blocked_by: blocked_by_from_refresh(node)
       }
     end
   end
+
+  # SPEC §8.2.1 / §8.5 Part C: the running-worker reconcile needs the current
+  # `blocked_by` set to detect CLOSED→OPEN transitions on dependencies. We
+  # surface the normalized list (`[%{id, identifier, state}]`) on Issue rows
+  # and an empty list otherwise so the orchestrator can compare against the
+  # snapshot taken at dispatch.
+  defp blocked_by_from_refresh(%{"content" => %{"__typename" => "Issue"} = content}) do
+    case get_in(content, ["trackedIssues", "nodes"]) do
+      nodes when is_list(nodes) ->
+        for %{"id" => id, "number" => n, "state" => state, "repository" => %{"nameWithOwner" => nwo}} <-
+              nodes do
+          %{id: id, identifier: "#{nwo}##{n}", state: state}
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  defp blocked_by_from_refresh(_node), do: []
 
   defp identifier_from_refresh(%{
          "content" => %{"__typename" => "Issue", "number" => n, "repository" => %{"nameWithOwner" => nwo}}

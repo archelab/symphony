@@ -201,7 +201,23 @@ defmodule SymphonyElixir.Github.AdapterTest do
               "__typename" => "Issue",
               "number" => 42,
               "state" => "OPEN",
-              "repository" => %{"nameWithOwner" => "archelab/symphony"}
+              "repository" => %{"nameWithOwner" => "archelab/symphony"},
+              "trackedIssues" => %{
+                "nodes" => [
+                  %{
+                    "id" => "I_blocker1",
+                    "number" => 11,
+                    "state" => "OPEN",
+                    "repository" => %{"nameWithOwner" => "archelab/symphony"}
+                  },
+                  %{
+                    "id" => "I_blocker2",
+                    "number" => 12,
+                    "state" => "CLOSED",
+                    "repository" => %{"nameWithOwner" => "archelab/symphony"}
+                  }
+                ]
+              }
             }
           },
           %{
@@ -214,6 +230,22 @@ defmodule SymphonyElixir.Github.AdapterTest do
               "__typename" => "Issue",
               "number" => 99,
               "state" => "CLOSED",
+              "repository" => %{"nameWithOwner" => "archelab/symphony"},
+              "trackedIssues" => %{"nodes" => []}
+            }
+          },
+          # Issue row with `trackedIssues` field absent altogether — exercises
+          # the fallback to `[]` in `blocked_by_from_refresh/1`.
+          %{
+            "__typename" => "ProjectV2Item",
+            "id" => "PVTI_iss_no_tracked",
+            "type" => "ISSUE",
+            "isArchived" => false,
+            "fieldValueByName" => %{"name" => "Agent Ready"},
+            "content" => %{
+              "__typename" => "Issue",
+              "number" => 77,
+              "state" => "OPEN",
               "repository" => %{"nameWithOwner" => "archelab/symphony"}
             }
           },
@@ -310,6 +342,27 @@ defmodule SymphonyElixir.Github.AdapterTest do
     refute Map.has_key?(by_id, "PVTI_no_content")
     refute Map.has_key?(by_id, "PVTI_archived")
     refute Map.has_key?(by_id, "PVTI_redacted")
+
+    # SPEC §8.5 Part C — refresh-result `blocked_by` must mirror the live
+    # trackedIssues set so the running-worker reconcile can detect a CLOSED→
+    # OPEN transition on a dependency.
+    assert by_id["PVTI_iss1"].blocked_by == [
+             %{id: "I_blocker1", identifier: "archelab/symphony#11", state: "OPEN"},
+             %{id: "I_blocker2", identifier: "archelab/symphony#12", state: "CLOSED"}
+           ]
+
+    # Empty trackedIssues → empty list (Issue with no dependencies).
+    assert by_id["PVTI_iss_closed"].blocked_by == []
+
+    # Issue row with the trackedIssues field absent altogether also yields [].
+    assert by_id["PVTI_iss_no_tracked"].blocked_by == []
+
+    # Non-Issue rows (PR, Draft) carry an empty `blocked_by` list — the
+    # refresh-side reconcile only fires `:dependencies_reopened` on Issues,
+    # but the field is always present so downstream code can pattern-match it.
+    assert by_id["PVTI_pr_open"].blocked_by == []
+    assert by_id["PVTI_pr_merged"].blocked_by == []
+    assert by_id["PVTI_draft"].blocked_by == []
   end
 
   test "fetch_issue_states_by_ids/1 propagates client errors" do

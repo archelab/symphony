@@ -2,6 +2,11 @@ import Config
 
 config :phoenix, :json_library, Jason
 
+# SPEC §13.1 worker-stop structured-log metadata keys. Listed here so credo's
+# `MissedMetadataKeyInLoggerConfig` check (and any structured-log backend)
+# acknowledges them as known keys.
+config :logger, :default_formatter, metadata: [:issue_id, :issue_identifier, :session_id, :reason]
+
 config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],

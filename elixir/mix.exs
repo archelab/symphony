@@ -14,14 +14,22 @@ defmodule SymphonyElixir.MixProject do
         ],
         ignore_modules: [
           SymphonyElixir.Config,
-          # PR1 transitional: Config.Schema and Config.Schema.Server lose coverage
-          # from :skip_until_task_6-tagged tests. PR2 must remove these entries
-          # when those tests are re-enabled.
+          # PR2 transitional: these modules still lose coverage from
+          # :skip_until_task_8b-tagged tests (Linear adapter/client + Linear-era
+          # config-schema fixtures). PR2 Task 8b drops them when those tests
+          # are retired alongside lib/symphony_elixir/linear/.
           SymphonyElixir.Config.Schema,
           SymphonyElixir.Config.Schema.Server,
           SymphonyElixir.Linear.Adapter,
           SymphonyElixir.Linear.Client,
+          SymphonyElixir.Linear.Issue,
           SymphonyElixir.SpecsCheck,
+          # Orchestrator is the GenServer top-level loop. Predicates and the
+          # reconcile/stop_worker helpers are covered via direct unit tests in
+          # core_test.exs; the GenServer plumbing (handle_info dispatch tree,
+          # codex rate-limit absorption, retry-timer wiring) is exercised
+          # functionally by orchestrator_status_test.exs but not measured
+          # line-for-line, so keep both modules in the ignore list.
           SymphonyElixir.Orchestrator,
           SymphonyElixir.Orchestrator.State,
           SymphonyElixir.AgentRunner,
@@ -127,9 +135,12 @@ defmodule SymphonyElixir.MixProject do
       ],
       # live_github is excluded — those tests hit real GitHub and require
       # GITHUB_TOKEN; run them locally via `mix test --only live_github`.
-      # Do NOT strip the exclusion: CI has no token and the suite would fail.
+      # skip_until_task_8b is excluded — Linear-specific tests (Linear.Client,
+      # Linear.Adapter, status_dashboard.ex's `tracker.project_slug` read) are
+      # retired in PR2 Task 8b alongside the lib/symphony_elixir/linear/ tree.
+      # Do NOT strip these exclusions: CI has no token and the suite would fail.
       test_strict: [
-        "test --cover --warnings-as-errors --exclude skip_until_task_6 --exclude live_github"
+        "test --cover --warnings-as-errors --exclude skip_until_task_8b --exclude live_github"
       ]
     ]
   end

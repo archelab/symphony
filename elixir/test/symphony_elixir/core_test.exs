@@ -1,8 +1,10 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
-  # TODO(Task 6): re-enable after orchestrator predicates land (Linear-shape Tracker fields).
-  @tag :skip_until_task_6
+  # TODO(Task 8b): test asserts on Linear-era schema fields (tracker.api_key,
+  # tracker.project_slug, tracker.assignee). PR2 Task 8b retargets at the
+  # GitHub schema.
+  @tag :skip_until_task_8b
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -90,8 +92,10 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
   end
 
-  # TODO(Task 6): re-enable after orchestrator predicates land (Linear-shape Tracker fields).
-  @tag :skip_until_task_6
+  # TODO(Task 8b): test asserts on Linear-era schema fields (tracker.api_key,
+  # tracker.project_slug, tracker.assignee). PR2 Task 8b retargets at the
+  # GitHub schema.
+  @tag :skip_until_task_8b
   test "current WORKFLOW.md file is valid and complete" do
     original_workflow_path = Workflow.workflow_file_path()
     on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
@@ -119,8 +123,10 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.workflow_prompt() == prompt
   end
 
-  # TODO(Task 6): re-enable after orchestrator predicates land (Linear-shape Tracker fields).
-  @tag :skip_until_task_6
+  # TODO(Task 8b): test asserts on Linear-era schema fields (tracker.api_key,
+  # tracker.project_slug, tracker.assignee). PR2 Task 8b retargets at the
+  # GitHub schema.
+  @tag :skip_until_task_8b
   test "linear api token resolves from LINEAR_API_KEY env var" do
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
     env_api_key = "test-linear-api-key"
@@ -139,8 +145,10 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
   end
 
-  # TODO(Task 6): re-enable after orchestrator predicates land (Linear-shape Tracker fields).
-  @tag :skip_until_task_6
+  # TODO(Task 8b): test asserts on Linear-era schema fields (tracker.api_key,
+  # tracker.project_slug, tracker.assignee). PR2 Task 8b retargets at the
+  # GitHub schema.
+  @tag :skip_until_task_8b
   test "linear assignee resolves from LINEAR_ASSIGNEE env var" do
     previous_linear_assignee = System.get_env("LINEAR_ASSIGNEE")
     env_assignee = "dev@example.com"
@@ -228,11 +236,11 @@ defmodule SymphonyElixir.CoreTest do
     GenServer.stop(pid)
   end
 
-  test "linear issue state reconciliation fetch with no running issues is a no-op" do
-    assert {:ok, []} = Client.fetch_issue_states_by_ids([])
-  end
+  # NOTE(Task 8b): Linear.Client wrapper — deleted with linear/client.ex.
+  @tag :skip_until_task_8b
+  test "linear issue state reconciliation fetch with no running issues is a no-op", do: :ok
 
-  test "non-active issue state stops running agent without cleaning workspace" do
+  test "non-active issue state (refresh map) stops running agent without cleaning workspace" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -240,8 +248,8 @@ defmodule SymphonyElixir.CoreTest do
       )
 
     issue_id = "issue-1"
-    issue_identifier = "MT-555"
-    workspace = Path.join(test_root, issue_identifier)
+    issue_identifier = "archelab/symphony#555"
+    workspace = Path.join(test_root, "archelab_symphony_555")
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
@@ -260,31 +268,37 @@ defmodule SymphonyElixir.CoreTest do
           end
         end)
 
-      state = %Orchestrator.State{
-        running: %{
-          issue_id => %{
-            pid: agent_pid,
-            ref: nil,
-            identifier: issue_identifier,
-            issue: %Issue{id: issue_id, state: "Todo", identifier: issue_identifier},
-            started_at: DateTime.utc_now()
-          }
+      running_entry = %{
+        pid: agent_pid,
+        ref: nil,
+        issue_id: issue_id,
+        issue_identifier: issue_identifier,
+        identifier: issue_identifier,
+        issue: %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          kind: "issue",
+          state: "Todo",
+          issue_state: "OPEN"
         },
+        started_at: DateTime.utc_now(),
+        blocked_by_snapshot: []
+      }
+
+      state = %Orchestrator.State{
+        running: %{issue_id => running_entry},
         claimed: MapSet.new([issue_id]),
         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
         retry_attempts: %{}
       }
 
-      issue = %Issue{
-        id: issue_id,
-        identifier: issue_identifier,
-        state: "Backlog",
-        title: "Queued",
-        description: "Not started",
-        labels: []
-      }
+      # `Backlog` is neither active nor terminal — :inactive_state branch,
+      # which does NOT clean up the workspace per SPEC §8.5 Part B.
+      refresh = [%{id: issue_id, state: "Backlog", blocked_by: []}]
+      tracker = Config.settings!().tracker
 
-      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+      updated_state =
+        Orchestrator.reconcile_running({issue_id, running_entry}, refresh, tracker, state)
 
       refute Map.has_key?(updated_state.running, issue_id)
       refute MapSet.member?(updated_state.claimed, issue_id)
@@ -295,7 +309,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "terminal issue state stops running agent and cleans workspace" do
+  test "terminal issue state (refresh map) stops running agent and cleans workspace" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -303,8 +317,8 @@ defmodule SymphonyElixir.CoreTest do
       )
 
     issue_id = "issue-2"
-    issue_identifier = "MT-556"
-    workspace = Path.join(test_root, issue_identifier)
+    issue_identifier = "archelab/symphony#556"
+    workspace = Path.join(test_root, "archelab_symphony_556")
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
@@ -323,31 +337,37 @@ defmodule SymphonyElixir.CoreTest do
           end
         end)
 
-      state = %Orchestrator.State{
-        running: %{
-          issue_id => %{
-            pid: agent_pid,
-            ref: nil,
-            identifier: issue_identifier,
-            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
-            started_at: DateTime.utc_now()
-          }
+      running_entry = %{
+        pid: agent_pid,
+        ref: nil,
+        issue_id: issue_id,
+        issue_identifier: issue_identifier,
+        identifier: issue_identifier,
+        issue: %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          kind: "issue",
+          state: "In Progress",
+          issue_state: "OPEN"
         },
+        started_at: DateTime.utc_now(),
+        blocked_by_snapshot: []
+      }
+
+      state = %Orchestrator.State{
+        running: %{issue_id => running_entry},
         claimed: MapSet.new([issue_id]),
         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
         retry_attempts: %{}
       }
 
-      issue = %Issue{
-        id: issue_id,
-        identifier: issue_identifier,
-        state: "Closed",
-        title: "Done",
-        description: "Completed",
-        labels: []
-      }
+      # Status moved to a terminal value — :terminal_state branch with
+      # workspace cleanup.
+      refresh = [%{id: issue_id, state: "Closed", blocked_by: []}]
+      tracker = Config.settings!().tracker
 
-      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+      updated_state =
+        Orchestrator.reconcile_running({issue_id, running_entry}, refresh, tracker, state)
 
       refute Map.has_key?(updated_state.running, issue_id)
       refute MapSet.member?(updated_state.claimed, issue_id)
@@ -436,94 +456,57 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "reconcile updates running issue state for active issues" do
+  test "reconcile (active refresh map) keeps worker and updates blocker snapshot" do
     issue_id = "issue-3"
+    identifier = "archelab/symphony#557"
+
+    running_entry = %{
+      pid: self(),
+      ref: nil,
+      issue_id: issue_id,
+      issue_identifier: identifier,
+      identifier: identifier,
+      issue: %Issue{
+        id: issue_id,
+        identifier: identifier,
+        kind: "issue",
+        state: "Todo",
+        issue_state: "OPEN"
+      },
+      started_at: DateTime.utc_now(),
+      blocked_by_snapshot: []
+    }
 
     state = %Orchestrator.State{
-      running: %{
-        issue_id => %{
-          pid: self(),
-          ref: nil,
-          identifier: "MT-557",
-          issue: %Issue{
-            id: issue_id,
-            identifier: "MT-557",
-            state: "Todo"
-          },
-          started_at: DateTime.utc_now()
-        }
-      },
+      running: %{issue_id => running_entry},
       claimed: MapSet.new([issue_id]),
       codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
       retry_attempts: %{}
     }
 
-    issue = %Issue{
-      id: issue_id,
-      identifier: "MT-557",
-      state: "In Progress",
-      title: "Active state refresh",
-      description: "State should be refreshed",
-      labels: []
-    }
+    refreshed_blockers = [%{id: "B1", identifier: "archelab/symphony#999", state: "OPEN"}]
+    refresh = [%{id: issue_id, state: "In Progress", blocked_by: refreshed_blockers}]
+    tracker = Config.settings!().tracker
 
-    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
-    updated_entry = updated_state.running[issue_id]
+    updated_state =
+      Orchestrator.reconcile_running({issue_id, running_entry}, refresh, tracker, state)
 
     assert Map.has_key?(updated_state.running, issue_id)
     assert MapSet.member?(updated_state.claimed, issue_id)
-    assert updated_entry.issue.state == "In Progress"
+    updated_entry = updated_state.running[issue_id]
+    assert updated_entry.blocked_by_snapshot == refreshed_blockers
   end
 
+  # NOTE(Task 8b): Linear-era assignee-reassignment routing relied on the
+  # orchestrator-side `assigned_to_worker` flag, which is not part of the
+  # GitHub adapter contract — GitHub filters assignees at the GraphQL query
+  # layer, not in the orchestrator reconcile loop. Task 8b reroutes the
+  # "issue left this worker" semantics once the Linear path is retired.
+  @tag :skip_until_task_8b
   test "reconcile stops running issue when it is reassigned away from this worker" do
-    issue_id = "issue-reassigned"
-
-    agent_pid =
-      spawn(fn ->
-        receive do
-          :stop -> :ok
-        end
-      end)
-
-    state = %Orchestrator.State{
-      running: %{
-        issue_id => %{
-          pid: agent_pid,
-          ref: nil,
-          identifier: "MT-561",
-          issue: %Issue{
-            id: issue_id,
-            identifier: "MT-561",
-            state: "In Progress",
-            assigned_to_worker: true
-          },
-          started_at: DateTime.utc_now()
-        }
-      },
-      claimed: MapSet.new([issue_id]),
-      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
-      retry_attempts: %{}
-    }
-
-    issue = %Issue{
-      id: issue_id,
-      identifier: "MT-561",
-      state: "In Progress",
-      title: "Reassigned active issue",
-      description: "Worker should stop",
-      labels: [],
-      assigned_to_worker: false
-    }
-
-    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
-
-    refute Map.has_key?(updated_state.running, issue_id)
-    refute MapSet.member?(updated_state.claimed, issue_id)
-    refute Process.alive?(agent_pid)
+    :ok
   end
 
-  # TODO(Task 6): re-enable after orchestrator predicates land (Linear-shape Tracker fields).
-  @tag :skip_until_task_6
   test "normal worker exit schedules active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()
@@ -558,14 +541,12 @@ defmodule SymphonyElixir.CoreTest do
     state = :sys.get_state(pid)
 
     refute Map.has_key?(state.running, issue_id)
-    assert MapSet.member?(state.completed, issue_id)
+    assert Map.has_key?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
     assert_due_in_range(due_at_ms, 500, 1_100)
   end
 
-  # TODO(Task 6): re-enable after orchestrator predicates land (Linear-shape Tracker fields).
-  @tag :skip_until_task_6
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()
@@ -606,8 +587,6 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 39_500, 40_500)
   end
 
-  # TODO(Task 6): re-enable after orchestrator predicates land (Linear-shape Tracker fields).
-  @tag :skip_until_task_6
   test "first abnormal worker exit waits before retrying" do
     issue_id = "issue-crash-initial"
     ref = make_ref()
@@ -647,8 +626,6 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 9_000, 10_500)
   end
 
-  # TODO(Task 6): re-enable after orchestrator predicates land (Linear-shape Tracker fields).
-  @tag :skip_until_task_6
   test "stale retry timer messages do not consume newer retry entries" do
     issue_id = "issue-stale-retry"
     orchestrator_name = Module.concat(__MODULE__, :StaleRetryOrchestrator)
@@ -776,9 +753,402 @@ defmodule SymphonyElixir.CoreTest do
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
-  test "fetch issues by states with empty state set is a no-op" do
-    assert {:ok, []} = Client.fetch_issues_by_states([])
+  describe "dispatchable?/2 (SPEC §11.2.1 terminal-OR + §8.2 eligibility)" do
+    alias SymphonyElixir.Tracker.Memory
+
+    setup do
+      tracker_settings = %{
+        active_states: ["Agent Ready", "In Progress"],
+        terminal_states: ["Done"],
+        dependency_gating_states: ["Agent Ready"],
+        gate_running_on_dependencies: false,
+        cross_repo_blockers: false
+      }
+
+      %{tracker_settings: tracker_settings}
+    end
+
+    test "merged PR is treated as terminal even if Project Status is active",
+         %{tracker_settings: tracker_settings} do
+      pr_issue =
+        Issue.new(%{
+          id: "PVTI_pr",
+          identifier: "archelab/symphony#5",
+          kind: "pull_request",
+          title: "merged",
+          state: "In Progress",
+          issue_state: "MERGED",
+          pr: %{state: "MERGED", merged: true, is_draft: false, base_ref_name: "main"},
+          labels: [],
+          blocked_by: [],
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          number: 5
+        })
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [pr_issue])
+
+      refute Orchestrator.dispatchable?(pr_issue, tracker_settings)
+
+      # Memory adapter also filters terminal-OR at the source.
+      assert {:ok, []} = Memory.fetch_candidate_issues()
+    end
+
+    test "closed issue with active Status is rejected", %{tracker_settings: tracker_settings} do
+      issue =
+        Issue.new(%{
+          id: "PVTI_closed",
+          identifier: "archelab/symphony#6",
+          kind: "issue",
+          state: "Agent Ready",
+          issue_state: "CLOSED",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"}
+        })
+
+      refute Orchestrator.dispatchable?(issue, tracker_settings)
+    end
+
+    test "<no status> sentinel is never dispatchable", %{tracker_settings: tracker_settings} do
+      issue =
+        Issue.new(%{
+          id: "PVTI_ns",
+          identifier: "archelab/symphony#7",
+          kind: "issue",
+          state: "<no status>",
+          issue_state: "OPEN",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"}
+        })
+
+      refute Orchestrator.dispatchable?(issue, tracker_settings)
+    end
+
+    test "OPEN issue with active Status is dispatchable", %{tracker_settings: tracker_settings} do
+      issue =
+        Issue.new(%{
+          id: "PVTI_ok",
+          identifier: "archelab/symphony#8",
+          kind: "issue",
+          state: "In Progress",
+          issue_state: "OPEN",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"}
+        })
+
+      assert Orchestrator.dispatchable?(issue, tracker_settings)
+    end
+
+    test "draft_issue with active Status is dispatchable (no issue_state required)",
+         %{tracker_settings: tracker_settings} do
+      issue =
+        Issue.new(%{
+          id: "PVTI_draft",
+          identifier: "draft:abcdef",
+          kind: "draft_issue",
+          state: "Agent Ready",
+          issue_state: nil
+        })
+
+      assert Orchestrator.dispatchable?(issue, tracker_settings)
+    end
+
+    test "dependency gating drops parent when same-repo blocker is open",
+         %{tracker_settings: tracker_settings} do
+      issue =
+        Issue.new(%{
+          id: "PVTI_parent",
+          identifier: "archelab/symphony#9",
+          kind: "issue",
+          state: "Agent Ready",
+          issue_state: "OPEN",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          blocked_by: [%{id: "B1", identifier: "archelab/symphony#10", state: "OPEN"}]
+        })
+
+      refute Orchestrator.dispatchable?(issue, tracker_settings)
+    end
+
+    test "dependency gating ignores cross-repo blockers when cross_repo_blockers=false",
+         %{tracker_settings: tracker_settings} do
+      issue =
+        Issue.new(%{
+          id: "PVTI_parent_cross",
+          identifier: "archelab/symphony#11",
+          kind: "issue",
+          state: "Agent Ready",
+          issue_state: "OPEN",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          blocked_by: [%{id: "B2", identifier: "other/repo#1", state: "OPEN"}]
+        })
+
+      assert Orchestrator.dispatchable?(issue, tracker_settings)
+    end
+
+    test "dependency gating honors cross-repo blockers when enabled" do
+      tracker_settings = %{
+        active_states: ["Agent Ready"],
+        terminal_states: ["Done"],
+        dependency_gating_states: ["Agent Ready"],
+        gate_running_on_dependencies: false,
+        cross_repo_blockers: true
+      }
+
+      issue =
+        Issue.new(%{
+          id: "PVTI_parent_cross_on",
+          identifier: "archelab/symphony#12",
+          kind: "issue",
+          state: "Agent Ready",
+          issue_state: "OPEN",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          blocked_by: [%{id: "B3", identifier: "other/repo#1", state: "OPEN"}]
+        })
+
+      refute Orchestrator.dispatchable?(issue, tracker_settings)
+    end
+
+    test "draft blocker with `draft:<short>` identifier is dropped under cross_repo_blockers=false",
+         %{tracker_settings: tracker_settings} do
+      issue =
+        Issue.new(%{
+          id: "PVTI_draft_blocker",
+          identifier: "archelab/symphony#13",
+          kind: "issue",
+          state: "Agent Ready",
+          issue_state: "OPEN",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          blocked_by: [%{id: "B4", identifier: "draft:abc123", state: "OPEN"}]
+        })
+
+      assert Orchestrator.dispatchable?(issue, tracker_settings)
+    end
+
+    test "CLOSED blocker is resolved; parent dispatches", %{tracker_settings: tracker_settings} do
+      issue =
+        Issue.new(%{
+          id: "PVTI_unblocked",
+          identifier: "archelab/symphony#14",
+          kind: "issue",
+          state: "Agent Ready",
+          issue_state: "OPEN",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          blocked_by: [%{id: "B5", identifier: "archelab/symphony#99", state: "CLOSED"}]
+        })
+
+      assert Orchestrator.dispatchable?(issue, tracker_settings)
+    end
   end
+
+  describe "reconcile_running/3 (SPEC §8.5 Part B + §13.1 stop-reason vocab)" do
+    setup do
+      tracker_settings = %{
+        active_states: ["Agent Ready", "In Progress"],
+        terminal_states: ["Done"],
+        dependency_gating_states: ["Agent Ready"],
+        gate_running_on_dependencies: false,
+        cross_repo_blockers: false
+      }
+
+      running_entry = %{
+        issue_id: "PVTI_x",
+        issue_identifier: "archelab/symphony#1",
+        identifier: "archelab/symphony#1",
+        session_id: "t-1",
+        pid: nil,
+        ref: nil,
+        started_at: DateTime.utc_now(),
+        blocked_by_snapshot: []
+      }
+
+      state = %Orchestrator.State{
+        running: %{"PVTI_x" => running_entry},
+        claimed: MapSet.new(["PVTI_x"]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      %{tracker_settings: tracker_settings, running: running_entry, state: state}
+    end
+
+    test "<no status> reconciliation is a no-op (SPEC §11.2.1) — no worker stop",
+         %{tracker_settings: settings, running: running, state: state} do
+      refresh = [%{id: "PVTI_x", state: "<no status>"}]
+
+      {updated, log} =
+        with_log(fn ->
+          Orchestrator.reconcile_running({"PVTI_x", running}, refresh, settings, state)
+        end)
+
+      refute log =~ "worker stop"
+      assert Map.has_key?(updated.running, "PVTI_x")
+    end
+
+    test "<closed> sentinel emits :terminal_or_closed stop",
+         %{tracker_settings: settings, running: running, state: state} do
+      refresh = [%{id: "PVTI_x", state: "<closed>"}]
+
+      {updated, log} =
+        with_log(fn ->
+          Orchestrator.reconcile_running({"PVTI_x", running}, refresh, settings, state)
+        end)
+
+      assert log =~ "worker stop"
+      assert log =~ "reason=:terminal_or_closed"
+      refute Map.has_key?(updated.running, "PVTI_x")
+    end
+
+    test "<merged> sentinel emits :terminal_or_merged stop",
+         %{tracker_settings: settings, running: running, state: state} do
+      refresh = [%{id: "PVTI_x", state: "<merged>"}]
+
+      {updated, log} =
+        with_log(fn ->
+          Orchestrator.reconcile_running({"PVTI_x", running}, refresh, settings, state)
+        end)
+
+      assert log =~ "worker stop"
+      assert log =~ "reason=:terminal_or_merged"
+      refute Map.has_key?(updated.running, "PVTI_x")
+    end
+
+    test "terminal Status emits :terminal_state stop",
+         %{tracker_settings: settings, running: running, state: state} do
+      refresh = [%{id: "PVTI_x", state: "Done"}]
+
+      {updated, log} =
+        with_log(fn ->
+          Orchestrator.reconcile_running({"PVTI_x", running}, refresh, settings, state)
+        end)
+
+      assert log =~ "reason=:terminal_state"
+      refute Map.has_key?(updated.running, "PVTI_x")
+    end
+
+    test "non-active non-terminal Status emits :inactive_state stop",
+         %{tracker_settings: settings, running: running, state: state} do
+      refresh = [%{id: "PVTI_x", state: "Backlog"}]
+
+      {updated, log} =
+        with_log(fn ->
+          Orchestrator.reconcile_running({"PVTI_x", running}, refresh, settings, state)
+        end)
+
+      assert log =~ "reason=:inactive_state"
+      refute Map.has_key?(updated.running, "PVTI_x")
+    end
+
+    test "missing refresh row emits :reconciled_missing stop",
+         %{tracker_settings: settings, running: running, state: state} do
+      {updated, log} =
+        with_log(fn ->
+          Orchestrator.reconcile_running({"PVTI_x", running}, [], settings, state)
+        end)
+
+      assert log =~ "reason=:reconciled_missing"
+      refute Map.has_key?(updated.running, "PVTI_x")
+    end
+
+    test "active Status with no blocker churn is a no-op",
+         %{tracker_settings: settings, running: running, state: state} do
+      refresh = [%{id: "PVTI_x", state: "In Progress", blocked_by: []}]
+
+      {updated, log} =
+        with_log(fn ->
+          Orchestrator.reconcile_running({"PVTI_x", running}, refresh, settings, state)
+        end)
+
+      refute log =~ "worker stop"
+      assert Map.has_key?(updated.running, "PVTI_x")
+    end
+
+    test "gate_running_on_dependencies=true + blocker transition CLOSED→OPEN emits :dependencies_reopened" do
+      settings = %{
+        active_states: ["In Progress"],
+        terminal_states: ["Done"],
+        dependency_gating_states: ["Agent Ready"],
+        gate_running_on_dependencies: true,
+        cross_repo_blockers: false
+      }
+
+      running_entry = %{
+        issue_id: "PVTI_y",
+        issue_identifier: "archelab/symphony#2",
+        identifier: "archelab/symphony#2",
+        session_id: "t-2",
+        pid: nil,
+        ref: nil,
+        started_at: DateTime.utc_now(),
+        blocked_by_snapshot: [%{id: "B1", identifier: "archelab/symphony#3", state: "CLOSED"}]
+      }
+
+      state = %Orchestrator.State{
+        running: %{"PVTI_y" => running_entry},
+        claimed: MapSet.new(["PVTI_y"]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      refresh = [
+        %{
+          id: "PVTI_y",
+          state: "In Progress",
+          blocked_by: [%{id: "B1", identifier: "archelab/symphony#3", state: "OPEN"}]
+        }
+      ]
+
+      {updated, log} =
+        with_log(fn ->
+          Orchestrator.reconcile_running({"PVTI_y", running_entry}, refresh, settings, state)
+        end)
+
+      assert log =~ "reason=:dependencies_reopened"
+      refute Map.has_key?(updated.running, "PVTI_y")
+    end
+  end
+
+  test "completed records ISO8601 completed_at on normal worker exit" do
+    issue_id = "issue-completed-iso8601"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :CompletedAtOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "archelab/symphony#100",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "archelab/symphony#100",
+        kind: "issue",
+        state: "In Progress",
+        issue_state: "OPEN"
+      },
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+
+    state = :sys.get_state(pid)
+    assert %{completed_at: timestamp} = Map.fetch!(state.completed, issue_id)
+    assert {:ok, _datetime, _offset} = DateTime.from_iso8601(timestamp)
+  end
+
+  # NOTE(Task 8b): Linear.Client wrapper — deleted with linear/client.ex.
+  @tag :skip_until_task_8b
+  test "fetch issues by states with empty state set is a no-op", do: :ok
 
   test "prompt builder renders issue and attempt values from workflow template" do
     workflow_prompt =
