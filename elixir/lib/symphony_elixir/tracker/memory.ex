@@ -2,36 +2,19 @@ defmodule SymphonyElixir.Tracker.Memory do
   @moduledoc """
   In-memory tracker adapter used for tests and local development.
 
-  Backed by a tiny local `Issue` struct rather than `SymphonyElixir.Linear.Issue`
-  so PR2 / Task 8b can delete the Linear modules without breaking the memory
-  adapter or its tests.
+  Emits `SymphonyElixir.Github.Issue` structs so the predicate pipeline gets
+  exactly the same shape it sees in production from the GitHub Projects v2
+  adapter. SPEC §11.2.1 terminal-OR is honored here so a CLOSED/MERGED issue
+  is ineligible regardless of its Project Status field.
   """
+
+  alias SymphonyElixir.Github.Issue
 
   @behaviour SymphonyElixir.Tracker
 
-  defmodule Issue do
-    @moduledoc """
-    Minimal in-memory issue record. Field set is intentionally narrow — only
-    what the orchestrator-side memory tests assert on (`id`, `identifier`,
-    `state`, plus a few common metadata fields). Keep this struct independent
-    from `Github.Issue` and `Linear.Issue` so it stays a stable test fixture.
-    """
-
-    defstruct [:id, :identifier, :title, :description, :priority, :state]
-
-    @type t :: %__MODULE__{
-            id: String.t() | nil,
-            identifier: String.t() | nil,
-            title: String.t() | nil,
-            description: String.t() | nil,
-            priority: integer() | nil,
-            state: String.t() | nil
-          }
-  end
-
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
-    {:ok, issue_entries()}
+    {:ok, Enum.filter(issue_entries(), &candidate?/1)}
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -64,6 +47,12 @@ defmodule SymphonyElixir.Tracker.Memory do
   defp issue_entries do
     Enum.filter(configured_issues(), &match?(%Issue{}, &1))
   end
+
+  # SPEC §11.2.1: CLOSED/MERGED issue_state ⇒ terminal-OR even if Status active.
+  defp candidate?(%Issue{issue_state: issue_state}) when issue_state in ["CLOSED", "MERGED"],
+    do: false
+
+  defp candidate?(%Issue{}), do: true
 
   defp normalize_state(state) when is_binary(state) do
     state

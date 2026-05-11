@@ -393,15 +393,11 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_project_link_lines do
-    project_part =
-      case Config.settings!().tracker.project_slug do
-        project_slug when is_binary(project_slug) and project_slug != "" ->
-          colorize(linear_project_url(project_slug), @ansi_cyan)
-
-        _ ->
-          colorize("n/a", @ansi_gray)
-      end
-
+    # PR2 transitional: `tracker.project_slug` (Linear-era) was removed from
+    # the GitHub Projects v2 schema. Task 8b will rebuild this header with the
+    # GitHub project URL derived from owner + project_number. Until then,
+    # render `n/a` so the snapshot tests don't crash on KeyError.
+    project_part = colorize("n/a", @ansi_gray)
     project_line = colorize("│ Project: ", @ansi_bold) <> project_part
 
     case dashboard_url() do
@@ -426,8 +422,6 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_project_refresh_line(_) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
   end
-
-  defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
   defp dashboard_url do
     dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
