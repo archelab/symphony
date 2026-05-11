@@ -312,4 +312,46 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
                "variables" => %{}
              })
   end
+
+  test "operator can narrow the mutation allowlist via Application env" do
+    # Default allowlist includes addComment; override to only allow
+    # updateProjectV2ItemFieldValue and confirm addComment is now rejected.
+    Application.put_env(
+      :symphony_elixir,
+      :github_graphql_mutation_allowlist,
+      ~w(updateProjectV2ItemFieldValue)
+    )
+
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_graphql_mutation_allowlist) end)
+
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:error, {:mutation_not_allowed, "addComment"}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { addComment(input: {subjectId: \"x\", body: \"hi\"}) { clientMutationId } }",
+               "variables" => %{}
+             })
+  end
+
+  test "operator can widen the mutation allowlist via Application env" do
+    Application.put_env(
+      :symphony_elixir,
+      :github_graphql_mutation_allowlist,
+      ~w(addComment customMutation)
+    )
+
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_graphql_mutation_allowlist) end)
+
+    fake = fn _q, _v, _opts -> {:ok, %{"data" => %{"customMutation" => %{}}}} end
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:ok, %{"data" => %{"customMutation" => _}}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { customMutation(input: {x: 1}) { ok } }",
+               "variables" => %{}
+             })
+  end
 end
