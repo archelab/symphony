@@ -47,4 +47,12 @@ jobs:
           mix lint
 
       - name: Test (strict, with coverage)
+        env:
+          # WORKFLOW.md declares api_token: $GITHUB_TOKEN. The Application boots
+          # the Orchestrator during `mix test`, which calls Config.settings!()
+          # and rejects nil/empty tokens. Tests use Mox/Bypass for all real
+          # GitHub calls, so the token value is never exercised — only its
+          # non-emptiness. A clearly fake value documents that no real GitHub
+          # traffic should occur during CI tests.
+          GITHUB_TOKEN: ci-test-not-real
         run: mix test_strict
