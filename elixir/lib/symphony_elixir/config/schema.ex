@@ -218,6 +218,38 @@ defmodule SymphonyElixir.Config.Schema do
       end
     end
 
+    defmodule SessionSummary do
+      @moduledoc """
+      Per-session summary comment configuration (SPEC §11.8.10).
+
+      Independent of the workpad protocol. Defaults to enabled — every
+      dispatched session emits a permanent audit comment with the
+      `<!-- symphony-session-summary:<thread_id>:<version> -->` marker. The
+      summary surfaces the session's lifecycle (Dispatched, Completed,
+      Duration, Model, Stop reason) plus a freeform body that future
+      operators can grep without joining against orchestrator logs.
+      """
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      alias SymphonyElixir.Workpad.Protocol
+
+      @primary_key false
+      embedded_schema do
+        field(:enabled, :boolean, default: true)
+        field(:version, :string, default: "v1")
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [:enabled, :version], empty_values: [])
+        |> validate_inclusion(:version, Protocol.session_summary_supported_versions(),
+          message: "session_summary.version must be one of #{Enum.join(Protocol.session_summary_supported_versions(), ", ")}"
+        )
+      end
+    end
+
     @primary_key false
     embedded_schema do
       field(:max_concurrent_agents, :integer, default: 10)
@@ -225,6 +257,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
       embeds_one(:workpad, Workpad, on_replace: :update, defaults_to_struct: true)
+      embeds_one(:session_summary, SessionSummary, on_replace: :update, defaults_to_struct: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -236,6 +269,7 @@ defmodule SymphonyElixir.Config.Schema do
         empty_values: []
       )
       |> cast_embed(:workpad, with: &Workpad.changeset/2)
+      |> cast_embed(:session_summary, with: &SessionSummary.changeset/2)
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
@@ -397,8 +431,9 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp validate_finalized_settings(settings) do
-    with :ok <- validate_tracker_api_token(settings) do
-      validate_workpad_requires_model(settings)
+    with :ok <- validate_tracker_api_token(settings),
+         :ok <- validate_workpad_requires_model(settings) do
+      validate_session_summary_requires_model(settings)
     end
   end
 
@@ -423,6 +458,20 @@ defmodule SymphonyElixir.Config.Schema do
     do: {:error, "agent.workpad.enabled requires codex.model to be set (SPEC §11.8.5)"}
 
   defp validate_workpad_requires_model(_settings), do: :ok
+
+  # SPEC §11.8.10: the session-summary header carries a `Model:` field that
+  # MUST match the agent's self-reported model. Same rationale as the workpad
+  # cross-validation: refuse to boot rather than emit `Model: ` (empty) into
+  # an append-only audit comment. The feature is independent of the workpad
+  # so its cross-validation runs unconditionally.
+  defp validate_session_summary_requires_model(%{agent: %{session_summary: %{enabled: true}}, codex: %{model: model}})
+       when is_binary(model) and model != "",
+       do: :ok
+
+  defp validate_session_summary_requires_model(%{agent: %{session_summary: %{enabled: true}}}),
+    do: {:error, "agent.session_summary.enabled requires codex.model to be set (SPEC §11.8.10)"}
+
+  defp validate_session_summary_requires_model(_settings), do: :ok
 
   @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
