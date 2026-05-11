@@ -92,16 +92,78 @@ The driver:
   query to also include `subIssues { nodes { number state } }` and merge into
   the same `blocked_by` list in `blocked_by_from_refresh/1`.
 
-- **E2E-2/E2E-4 race**: with `max_turns: 1` the worker frequently exits before
-  the next 5-second reconcile tick, so the runtime `:terminal_state` /
-  `:terminal_or_closed` reason is sometimes not observed. The orchestrator
-  still removes the claim ("Issue no longer visible") and the next start-up
-  terminal sweep cleans the workspace. Bump `max_turns: 5` or add a workspace
-  delay hook for a deterministic observation of the runtime path.
-
 - **E2E-8**: gpt-5.4-mini at minimal reasoning ignores in-prompt instructions
   ~always. Use `SYMPHONY_E2E_E2E8_MODEL=gpt-5.4 SYMPHONY_E2E_E2E8_REASON=low`
   (or stronger) to get a real verdict.
+
+## Known smoke-test artifacts
+
+The following PARTIAL verdicts are expected artifacts of the smoke harness
+running at `agent.max_turns: 1`. They are **not** orchestrator bugs and they
+do not violate SPEC.md §13.1. End behavior matches the spec in all cases.
+
+### E2E-2 / E2E-3 / E2E-4: `:DOWN`-before-reconcile race
+
+With `max_turns: 1` and the smoke prompt body ("Print 'ack smoke' and end the
+turn"), each codex worker finishes in 1–3 seconds — well under the configured
+5-second poll interval. The sequence of orchestrator events is then:
+
+1. Worker exits cleanly → `{:DOWN, ref, :process, _pid, :normal}` is delivered
+   to the orchestrator GenServer.
+2. The `:DOWN` handler
+   (`lib/symphony_elixir/orchestrator.ex` ~lines 179–224) pops the running
+   entry, logs `worker stop reason=:agent_exit_normal …` via the §13.1
+   single-site `log_worker_stop/2`, and schedules a continuation retry.
+3. On the next 5-second poll tick, `reconcile_running_issues/1` runs against
+   an empty `state.running` for that item — so `classify_refresh/3` never sees
+   the flipped Status / closed Issue. The reconcile-driven tokens
+   `:inactive_state` (E2E-3) and `:terminal_or_closed` (E2E-2 / E2E-4) are
+   therefore not emitted.
+4. The candidate-fetch path (SPEC §8.2) filters the now-inactive / terminal
+   item out on the next poll. The orchestrator emits
+   `Issue no longer visible, removing claim issue_id=…` and drops the claim.
+5. For closed Issues (E2E-4), the workspace is cleaned by the next startup
+   terminal sweep (SPEC §8.6 / `before_remove` hook). For inactive Status
+   (E2E-3), the workspace is intentionally preserved (inactive ≠ terminal).
+
+### Why this is not a spec violation
+
+§13.1 prescribes the **reason vocabulary** for worker stops; it does not
+guarantee that any specific token will fire for every state transition. The
+canonical reading of the spec across these sections is:
+
+- §8.5 Part B (active run reconciliation) operates on workers still in
+  `state.running`. If the worker has already exited naturally, there is no
+  running entry to reconcile — and `:agent_exit_normal` is itself a documented
+  stop reason (orchestrator.ex:423–429).
+- §8.2 (candidate selection) is the spec-mandated filter for the next poll. A
+  flipped-to-inactive or closed-mid-run item is correctly dropped here.
+- §8.6 (startup terminal sweep) is the spec-mandated safety net for any
+  terminal workspace that survived a clean exit.
+
+Together, these three paths fully cover the transition. The `:DOWN` handler
+intentionally acts as a **natural-exit accountant**, not a worker-stop in the
+§8.5 Part B sense, and does not consult the tracker on the hot exit path
+(adding a network call there would deadlock if GitHub were slow).
+
+### Verifying the reconcile path under realistic settings
+
+To observe `:inactive_state` / `:terminal_or_closed` from the reconcile path
+directly (PASS, not PARTIAL):
+
+1. Edit `workflow.smoke.md` locally: set `agent.max_turns: 5` and add a
+   `sleep 25` instruction (or any in-prompt delay) so each turn lasts longer
+   than `polling.interval_ms: 5000`.
+2. Run `SYMPHONY_E2E_TESTS=e2e-3-inactive-status-reconcile,e2e-4-close-mid-run ./run.sh`.
+3. Grep `log/symphony.log.*` for `worker stop reason=:inactive_state` and
+   `worker stop reason=:terminal_or_closed` matching the test issue id.
+
+Do **not** commit those edits to `workflow.smoke.md` — fast-mode is the
+default for CI throughput. The reconcile vocabulary itself is pinned by unit
+tests in `test/symphony_elixir/core_test.exs` under the
+`"reconcile_running/3 (SPEC §8.5 Part B + §13.1 stop-reason vocab)"`
+describe block, which exercise `classify_refresh/3` directly and do not
+depend on worker timing.
 
 ## Files
 
