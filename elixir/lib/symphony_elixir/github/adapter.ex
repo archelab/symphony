@@ -11,6 +11,10 @@ defmodule SymphonyElixir.Github.Adapter do
 
   # Composable fragments — Phase 2 adds @pr_fragment_tier2 by concatenation
   # without rewriting the surrounding query. Spec §11.7 expansion.
+  # SPEC §8.2.1 dependency gating reads BOTH relations: `trackedIssues` is the
+  # legacy "Tracking" markdown relation; `subIssues` is the new hierarchical
+  # sub-issues UI. They are SEPARATE relations on the GitHub Issue type — one
+  # does not subsume the other. Merge happens downstream in Normalize.blockers/2.
   @issue_fragment """
   ... on Issue {
     id number title body url state createdAt updatedAt
@@ -20,6 +24,9 @@ defmodule SymphonyElixir.Github.Adapter do
     }
     labels(first: 50) { nodes { name } }
     trackedIssues(first: 50) {
+      nodes { id number state repository { nameWithOwner } }
+    }
+    subIssues(first: 50) {
       nodes { id number state repository { nameWithOwner } }
     }
   }
@@ -84,6 +91,9 @@ defmodule SymphonyElixir.Github.Adapter do
           ... on Issue {
             id number state repository { nameWithOwner }
             trackedIssues(first: 50) {
+              nodes { id number state repository { nameWithOwner } }
+            }
+            subIssues(first: 50) {
               nodes { id number state repository { nameWithOwner } }
             }
           }
@@ -203,16 +213,17 @@ defmodule SymphonyElixir.Github.Adapter do
   # surface the normalized list (`[%{id, identifier, state}]`) on Issue rows
   # and an empty list otherwise so the orchestrator can compare against the
   # snapshot taken at dispatch.
+  #
+  # Both `trackedIssues` (legacy "Tracking" markdown relation) and `subIssues`
+  # (new sub-issues UI) count as blockers — the same child issue may appear
+  # in both, so we deduplicate on the GitHub node `id`.
   defp blocked_by_from_refresh(%{"content" => %{"__typename" => "Issue"} = content}) do
-    case get_in(content, ["trackedIssues", "nodes"]) do
-      nodes when is_list(nodes) ->
-        for %{"id" => id, "number" => n, "state" => state, "repository" => %{"nameWithOwner" => nwo}} <-
-              nodes do
-          %{id: id, identifier: "#{nwo}##{n}", state: state}
-        end
+    tracked = get_in(content, ["trackedIssues", "nodes"]) || []
+    sub = get_in(content, ["subIssues", "nodes"]) || []
 
-      _ ->
-        []
+    for %{"id" => id, "number" => n, "state" => state, "repository" => %{"nameWithOwner" => nwo}} <-
+          Enum.uniq_by(sub ++ tracked, & &1["id"]) do
+      %{id: id, identifier: "#{nwo}##{n}", state: state}
     end
   end
 

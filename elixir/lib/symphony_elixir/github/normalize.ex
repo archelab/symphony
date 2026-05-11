@@ -113,8 +113,16 @@ defmodule SymphonyElixir.Github.Normalize do
 
   defp labels(_), do: []
 
-  defp blockers("issue", %{"trackedIssues" => %{"nodes" => nodes}}) when is_list(nodes) do
-    for %{"id" => id, "number" => n, "state" => state, "repository" => %{"nameWithOwner" => nwo}} <- nodes do
+  # Spec §8.2.1: dependency gating must read BOTH relations. `trackedIssues`
+  # is the legacy "Tracking" markdown relation; `subIssues` is the new
+  # hierarchical sub-issues UI. The same child can appear in both, so we
+  # deduplicate on the GitHub node `id` before constructing blockers.
+  defp blockers("issue", %{} = content) do
+    tracked = get_in(content, ["trackedIssues", "nodes"]) || []
+    sub = get_in(content, ["subIssues", "nodes"]) || []
+
+    for %{"id" => id, "number" => n, "state" => state, "repository" => %{"nameWithOwner" => nwo}} <-
+          Enum.uniq_by(sub ++ tracked, & &1["id"]) do
       %Issue.Blocker{
         id: id,
         identifier: nwo <> "#" <> Integer.to_string(n),
