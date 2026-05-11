@@ -975,7 +975,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "completed records ISO8601 completed_at on normal worker exit" do
+  test "completed records the latest session as head of a list (SPEC §11.8.5)" do
     issue_id = "issue-completed-iso8601"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :CompletedAtOrchestrator)
@@ -988,6 +988,8 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+    dispatched_at = DateTime.to_iso8601(started_at)
 
     running_entry = %{
       pid: self(),
@@ -1000,7 +1002,11 @@ defmodule SymphonyElixir.CoreTest do
         state: "In Progress",
         issue_state: "OPEN"
       },
-      started_at: DateTime.utc_now()
+      started_at: started_at,
+      dispatched_at: dispatched_at,
+      thread_id: "thr-abc",
+      model: "gpt-5.5",
+      retry_attempt: 0
     }
 
     :sys.replace_state(pid, fn _ ->
@@ -1014,8 +1020,130 @@ defmodule SymphonyElixir.CoreTest do
     Process.sleep(50)
 
     state = :sys.get_state(pid)
-    assert %{completed_at: timestamp} = Map.fetch!(state.completed, issue_id)
-    assert {:ok, _datetime, _offset} = DateTime.from_iso8601(timestamp)
+
+    assert [head | _] = Map.fetch!(state.completed, issue_id)
+
+    assert %{
+             thread_id: "thr-abc",
+             attempt: 0,
+             dispatched_at: ^dispatched_at,
+             completed_at: completed_at,
+             duration_ms: duration_ms,
+             model: "gpt-5.5",
+             stop_reason: :agent_exit_normal
+           } = head
+
+    assert {:ok, _datetime, _offset} = DateTime.from_iso8601(completed_at)
+    assert is_integer(duration_ms) and duration_ms >= 0
+  end
+
+  test "completed list grows on successive dispatches and prunes to K (SPEC §11.8.5)" do
+    issue_id = "issue-completed-prune"
+    orchestrator_name = Module.concat(__MODULE__, :CompletedPruneOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    # Seed 25 prior sessions so we can verify pruning.
+    seed_records =
+      for i <- 1..25 do
+        %{
+          thread_id: "thr-#{i}",
+          attempt: 0,
+          dispatched_at: "2026-05-11T00:00:0#{rem(i, 10)}Z",
+          completed_at: "2026-05-11T01:00:0#{rem(i, 10)}Z",
+          duration_ms: 1000 * i,
+          model: nil,
+          stop_reason: :agent_exit_normal
+        }
+      end
+
+    ref = make_ref()
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "archelab/symphony#101",
+      issue: %Issue{id: issue_id, identifier: "archelab/symphony#101", kind: "issue", state: "In Progress", issue_state: "OPEN"},
+      started_at: started_at,
+      dispatched_at: DateTime.to_iso8601(started_at),
+      thread_id: "thr-new",
+      model: nil,
+      retry_attempt: 0
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:completed, %{issue_id => seed_records})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+
+    state = :sys.get_state(pid)
+    records = Map.fetch!(state.completed, issue_id)
+
+    # Pruned to 20 total (default max_sessions). New record is at the head.
+    assert length(records) == 20
+    assert [%{thread_id: "thr-new"} | _] = records
+  end
+
+  test "stop_reason carries reconcile-driven tokens (SPEC §11.8.5)" do
+    issue_id = "PVTI_reconcile_completed"
+    orchestrator_name = Module.concat(__MODULE__, :ReconcileStopReasonOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    fake_pid = spawn(fn -> Process.sleep(:infinity) end)
+    fake_ref = Process.monitor(fake_pid)
+
+    running_entry = %{
+      pid: fake_pid,
+      ref: fake_ref,
+      issue_id: issue_id,
+      issue_identifier: "archelab/symphony#102",
+      identifier: "archelab/symphony#102",
+      issue: %Issue{id: issue_id, identifier: "archelab/symphony#102", kind: "issue", state: "Done", issue_state: "CLOSED"},
+      worker_host: nil,
+      workspace_path: nil,
+      session_id: nil,
+      blocked_by_snapshot: [],
+      started_at: started_at,
+      dispatched_at: DateTime.to_iso8601(started_at),
+      thread_id: "thr-reconcile",
+      model: nil,
+      retry_attempt: 2
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+    end)
+
+    refresh = [%{id: issue_id, state: "<closed>", blocked_by: []}]
+    state_before = :sys.get_state(pid)
+    state_after = Orchestrator.apply_reconcile_running_for_test(state_before, refresh)
+
+    assert [%{stop_reason: :terminal_or_closed, thread_id: "thr-reconcile", attempt: 2} | _] =
+             Map.fetch!(state_after.completed, issue_id)
   end
 
   test "prompt builder renders issue and attempt values from workflow template" do

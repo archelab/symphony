@@ -81,6 +81,8 @@ defmodule SymphonyElixir.AgentRunner do
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
     with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+      send_thread_id(codex_update_recipient, issue, session)
+
       try do
         do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after
@@ -88,6 +90,17 @@ defmodule SymphonyElixir.AgentRunner do
       end
     end
   end
+
+  # SPEC §11.8.5: surface the Codex thread id to the orchestrator immediately
+  # after `AppServer.start_session/2` returns so the running entry can record
+  # it before the first turn runs.
+  defp send_thread_id(recipient, %Issue{id: issue_id}, %{thread_id: thread_id})
+       when is_pid(recipient) and is_binary(issue_id) and is_binary(thread_id) do
+    send(recipient, {:codex_thread_started, issue_id, thread_id})
+    :ok
+  end
+
+  defp send_thread_id(_recipient, _issue, _session), do: :ok
 
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)

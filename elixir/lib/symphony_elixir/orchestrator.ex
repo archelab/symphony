@@ -31,6 +31,10 @@ defmodule SymphonyElixir.Orchestrator do
     Per-issue running-worker record. Fields documented inline by the dispatch
     site `spawn_issue_on_worker_host/4`; codex_* fields are written by
     `integrate_codex_update/2`.
+
+    SPEC §11.8.5 fields: `:thread_id`, `:dispatched_at`, `:model` capture
+    workpad-relevant metadata at dispatch time so they survive into the
+    `session_record` history that `complete_issue/3` writes.
     """
     @type running_entry :: %{
             required(:pid) => pid() | nil,
@@ -56,8 +60,32 @@ defmodule SymphonyElixir.Orchestrator do
             required(:retry_attempt) => non_neg_integer(),
             required(:blocked_by_snapshot) => [map()],
             required(:started_at) => DateTime.t(),
+            required(:dispatched_at) => String.t(),
+            required(:thread_id) => String.t() | nil,
+            required(:model) => String.t() | nil,
             optional(:last_refresh_state) => String.t() | nil
           }
+
+    @typedoc """
+    SPEC §11.8.5: one session-history row captured when a running worker
+    terminates. The orchestrator stores most-recent-first lists keyed by
+    issue id under `State.completed`.
+    """
+    @type session_record :: %{
+            required(:thread_id) => String.t() | nil,
+            required(:attempt) => non_neg_integer(),
+            required(:dispatched_at) => String.t(),
+            required(:completed_at) => String.t(),
+            required(:duration_ms) => non_neg_integer(),
+            required(:model) => String.t() | nil,
+            required(:stop_reason) => atom() | nil
+          }
+
+    @typedoc """
+    SPEC §11.8.5 completed map: per-issue history of session records, head
+    is the most recent. Pruned to `agent.workpad.max_sessions_visible`.
+    """
+    @type completed_map :: %{optional(String.t()) => [session_record()]}
 
     @typedoc """
     Per-issue retry record. `timer_ref` and `retry_token` are paired so a stale
@@ -92,7 +120,7 @@ defmodule SymphonyElixir.Orchestrator do
             tick_timer_ref: reference() | nil,
             tick_token: reference() | nil,
             running: %{optional(String.t()) => running_entry()},
-            completed: %{optional(String.t()) => %{completed_at: String.t()}},
+            completed: completed_map(),
             claimed: MapSet.t(String.t()),
             retry_attempts: %{optional(String.t()) => retry_entry()},
             codex_totals: codex_totals() | nil,
@@ -107,9 +135,10 @@ defmodule SymphonyElixir.Orchestrator do
       :tick_timer_ref,
       :tick_token,
       running: %{},
-      # SPEC §4.1.8: `completed` upgrades from MapSet to a map
-      # issue_id → %{completed_at: iso8601} so the prompt builder (Task 7)
-      # can derive last_run_completed_at.
+      # SPEC §4.1.8 + §11.8.5: `completed` is now a map issue_id → [session_record, ...]
+      # (most-recent-first list) so the prompt builder can both derive
+      # `last_run_completed_at` (head record) and surface `prior_sessions` to
+      # the agent workpad. Pruned to `agent.workpad.max_sessions_visible`.
       completed: %{},
       claimed: MapSet.new(),
       retry_attempts: %{},
@@ -199,7 +228,7 @@ defmodule SymphonyElixir.Orchestrator do
           case reason do
             :normal ->
               state
-              |> complete_issue(issue_id)
+              |> complete_issue(issue_id, running_entry, stop_reason)
               |> schedule_issue_retry(issue_id, 1, %{
                 identifier: running_entry.identifier,
                 delay_type: :continuation,
@@ -262,6 +291,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  # SPEC §11.8.5: capture the agent's Codex thread id into the running entry
+  # as soon as `AppServer.start_session/2` returns it. The id is then forwarded
+  # into the eventual `session_record` written by `complete_issue/4`.
+  def handle_info({:codex_thread_started, issue_id, thread_id}, %{running: running} = state)
+      when is_binary(issue_id) and is_binary(thread_id) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        updated = Map.put(running_entry, :thread_id, thread_id)
+        {:noreply, %{state | running: Map.put(running, issue_id, updated)}}
+    end
+  end
+
+  def handle_info({:codex_thread_started, _issue_id, _thread_id}, state), do: {:noreply, state}
 
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
@@ -452,6 +498,17 @@ defmodule SymphonyElixir.Orchestrator do
         if is_reference(ref) do
           Process.demonitor(ref, [:flush])
         end
+
+        # SPEC §11.8.5: capture this terminated session into the workpad history
+        # before the running entry is dropped. `stall_restart` is intentionally
+        # excluded — a stall restart re-dispatches the same logical attempt, so
+        # recording it as a completed session would double-count the run.
+        state =
+          if reason == :stall_restart do
+            state
+          else
+            complete_issue(state, issue_id, running_entry, reason)
+          end
 
         %{
           state
@@ -859,7 +916,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
-    last_run_completed_at = get_in(state.completed, [issue.id, :completed_at])
+    last_run_completed_at = head_completed_at(state.completed, issue.id)
+    started_at = DateTime.utc_now()
+    dispatched_at = DateTime.to_iso8601(started_at)
+    model = codex_model_snapshot()
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient,
@@ -897,7 +957,10 @@ defmodule SymphonyElixir.Orchestrator do
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
             blocked_by_snapshot: Map.get(issue, :blocked_by, []) || [],
-            started_at: DateTime.utc_now()
+            started_at: started_at,
+            dispatched_at: dispatched_at,
+            thread_id: nil,
+            model: model
           })
 
         %{
@@ -963,14 +1026,64 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp complete_issue(%State{} = state, issue_id) do
+  # SPEC §11.8.5: append the latest session record to the per-issue list
+  # (most-recent-first), prune to `max_sessions/0`, and drop any pending retry.
+  # The running entry carries the fields we need to back-fill `dispatched_at`,
+  # `thread_id`, `model`, and the dispatch attempt; `Map.get/3` shields against
+  # legacy callers that built running entries without the §11.8.5 keys.
+  @spec complete_issue(State.t(), String.t(), State.running_entry(), atom() | nil) :: State.t()
+  defp complete_issue(%State{} = state, issue_id, running_entry, stop_reason)
+       when is_binary(issue_id) and is_map(running_entry) do
     completed_at = DateTime.utc_now() |> DateTime.to_iso8601()
+    record = build_session_record(running_entry, completed_at, stop_reason)
+    prior = Map.get(state.completed, issue_id, [])
+    pruned = prune_sessions([record | prior])
 
     %{
       state
-      | completed: Map.put(state.completed, issue_id, %{completed_at: completed_at}),
+      | completed: Map.put(state.completed, issue_id, pruned),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
+  end
+
+  defp build_session_record(running_entry, completed_at, stop_reason)
+       when is_map(running_entry) do
+    %{
+      thread_id: Map.get(running_entry, :thread_id),
+      attempt: Map.get(running_entry, :retry_attempt, 0),
+      dispatched_at: Map.get(running_entry, :dispatched_at, completed_at),
+      completed_at: completed_at,
+      duration_ms: duration_ms_for(running_entry),
+      model: Map.get(running_entry, :model),
+      stop_reason: stop_reason
+    }
+  end
+
+  defp duration_ms_for(%{started_at: %DateTime{} = started_at}) do
+    DateTime.utc_now() |> DateTime.diff(started_at, :millisecond) |> max(0)
+  end
+
+  defp duration_ms_for(_), do: 0
+
+  defp prune_sessions(records) when is_list(records), do: Enum.take(records, max_sessions())
+
+  # PR3 Task 2 swaps to Config.settings!().agent.workpad.max_sessions_visible.
+  defp max_sessions, do: 20
+
+  # Returns the head (most-recent) `:completed_at` for the issue, or nil if
+  # no prior session exists. Replaces the old `get_in/2` on a single-record
+  # map shape — same observable result for back-compat with PromptBuilder.
+  defp head_completed_at(completed, issue_id) when is_map(completed) and is_binary(issue_id) do
+    case Map.get(completed, issue_id) do
+      [%{completed_at: ts} | _] -> ts
+      _ -> nil
+    end
+  end
+
+  # Snapshot the codex model setting at dispatch time. Task 2 will add this
+  # field to the Config schema; until then `Map.get/3` returns nil safely.
+  defp codex_model_snapshot do
+    Map.get(Config.settings!().codex, :model)
   end
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
