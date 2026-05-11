@@ -99,4 +99,120 @@ defmodule SymphonyElixir.GithubLiveTest do
 
     assert is_binary(login)
   end
+
+  test "github_graphql workpad allowlist round-trip: addComment + updateIssueComment (SPEC §11.8.4)" do
+    # Live workpad-allowlist proof. Creates a throwaway issue via the `gh`
+    # CLI (createIssue is intentionally NOT on the allowlist), then exercises
+    # the agent-side surface: addComment and updateIssueComment through the
+    # `github_graphql` Codex tool. Finally verifies deleteIssueComment is
+    # rejected — workpad is append-only by spec.
+    title = "[workpad-live-test] addComment + updateIssueComment round-trip #{System.unique_integer([:positive])}"
+    body = "Throwaway live test for SPEC §11.8.4 — safe to close/delete."
+
+    # 1. Create throwaway issue via gh CLI.
+    {url, 0} =
+      System.cmd("gh", [
+        "issue",
+        "create",
+        "-R",
+        "archelab/symphony",
+        "--title",
+        title,
+        "--body",
+        body
+      ])
+
+    url = String.trim(url)
+    issue_number = url |> String.split("/") |> List.last() |> String.trim()
+
+    # Cleanup is registered immediately so we close the issue even if a
+    # later assertion crashes the test.
+    on_exit(fn ->
+      System.cmd("gh", ["issue", "close", "-R", "archelab/symphony", issue_number], stderr_to_stdout: true)
+    end)
+
+    # 2. Resolve the issue node id (subject for addComment).
+    {:ok,
+     %{
+       "data" => %{
+         "repository" => %{
+           "issue" => %{"id" => subject_id}
+         }
+       }
+     }} =
+      GithubGraphqlTool.handle(%{
+        "query" => """
+        query($num: Int!) {
+          repository(owner: "archelab", name: "symphony") {
+            issue(number: $num) { id }
+          }
+        }
+        """,
+        "variables" => %{"num" => String.to_integer(issue_number)}
+      })
+
+    assert is_binary(subject_id)
+
+    # 3. addComment (the agent's "create workpad" path).
+    add_body = "<!-- symphony-workpad:v1 -->\nwopad live-test seed body."
+
+    assert {:ok,
+            %{
+              "data" => %{
+                "addComment" => %{
+                  "commentEdge" => %{
+                    "node" => %{"id" => comment_id, "body" => returned_body}
+                  }
+                }
+              }
+            }} =
+             GithubGraphqlTool.handle(%{
+               "query" => """
+               mutation($subject: ID!, $body: String!) {
+                 addComment(input: {subjectId: $subject, body: $body}) {
+                   commentEdge { node { id body } }
+                 }
+               }
+               """,
+               "variables" => %{"subject" => subject_id, "body" => add_body}
+             })
+
+    assert is_binary(comment_id)
+    assert returned_body =~ "<!-- symphony-workpad:v1 -->"
+
+    # 4. updateIssueComment (the agent's "update workpad" path — SPEC §11.8.4).
+    update_body = "<!-- symphony-workpad:v1 -->\nwopad live-test updated body."
+
+    assert {:ok,
+            %{
+              "data" => %{
+                "updateIssueComment" => %{
+                  "issueComment" => %{"id" => ^comment_id, "body" => updated_body}
+                }
+              }
+            }} =
+             GithubGraphqlTool.handle(%{
+               "query" => """
+               mutation($id: ID!, $body: String!) {
+                 updateIssueComment(input: {id: $id, body: $body}) {
+                   issueComment { id body }
+                 }
+               }
+               """,
+               "variables" => %{"id" => comment_id, "body" => update_body}
+             })
+
+    assert updated_body =~ "updated body"
+
+    # 5. deleteIssueComment MUST be rejected — workpad is append-only.
+    assert {:error, {:mutation_not_allowed, "deleteIssueComment"}} =
+             GithubGraphqlTool.handle(%{
+               "query" => """
+               mutation($id: ID!) {
+                 deleteIssueComment(input: {id: $id}) { clientMutationId }
+               }
+               """,
+               "variables" => %{"id" => comment_id}
+             })
+  end
 end
