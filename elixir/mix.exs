@@ -113,7 +113,7 @@ defmodule SymphonyElixir.MixProject do
         "compile --warnings-as-errors",
         "specs.check",
         "credo --strict",
-        "dialyzer --halt-exit-status"
+        "dialyzer"
       ],
       # live_github is excluded — those tests hit real GitHub and require
       # GITHUB_TOKEN; run them locally via `mix test --only live_github`.

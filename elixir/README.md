@@ -13,36 +13,50 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 ## How it works
 
-1. Polls Linear for candidate work
+1. Polls GitHub Projects v2 for candidate work
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+During app-server sessions, Symphony also serves a client-side `github_graphql` tool so that repo
+skills can make raw GitHub GraphQL calls. Mutations are gated by an allowlist; by default the
+following mutation field names are permitted: `addComment`, `updateProjectV2ItemFieldValue`,
+`addLabelsToLabelable`, `removeLabelsFromLabelable`, `requestReviews`, `addPullRequestReview`,
+`resolveReviewThread`. To narrow or widen, set
+`:symphony_elixir, :github_graphql_mutation_allowlist` to a list of GraphQL mutation field names
+in your release config.
 
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+If a claimed issue moves to a terminal state (configured via `tracker.terminal_states`, e.g.
+`Done`, `Closed`, `Cancelled`, or `Duplicate` in your Project Status field), Symphony stops the
+active agent for that issue and cleans up matching workspaces.
 
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see
    [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
+2. Provide a GitHub token via the `GITHUB_TOKEN` environment variable. The simplest path is
+   `export GITHUB_TOKEN=$(gh auth token)` if you already use the `gh` CLI; otherwise create a
+   GitHub Personal Access Token with the `project` and `repo` scopes and export it as
+   `GITHUB_TOKEN`.
 3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
+4. Optionally copy the `commit`, `push`, `pull`, `land`, and `github` skills to your repo.
+   - The `github` skill expects Symphony's `github_graphql` app-server tool for raw GitHub
+     GraphQL operations such as comment editing, Project field updates, label changes, or
+     review-thread resolution.
 5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
+   - Set `tracker.owner`, `tracker.owner_type` (`organization` or `user`), `tracker.repo`, and
+     `tracker.project_number` to point at your GitHub Project v2.
+   - `tracker.status_field` names the single-select field that drives dispatch; configure
+     `active_states`, `terminal_states`, `dependency_gating_states`, and any
+     `cross_repo_blockers` to match your team's Project Status options.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
+
+> [!NOTE]
+> Migrating from the legacy Linear adapter? Any `WORKFLOW.md` still declaring `tracker.kind:
+> linear` will now fail `Config.validate_semantics/1` with `:unsupported_tracker_kind` at boot.
+> Switch the front matter to the GitHub config shown below.
 
 ## Prerequisites
 
@@ -90,11 +104,16 @@ Minimal example:
 tracker:
   kind: github
   endpoint: https://api.github.com/graphql
-  api_token: ghp_xxx
+  api_token: $GITHUB_TOKEN
   owner: your-org
   owner_type: organization
   project_number: 1
   repo: your-repo
+  status_field: Status
+  active_states: ["In Progress", "Rework"]
+  terminal_states: ["Done", "Closed", "Cancelled", "Duplicate"]
+  dependency_gating_states: ["Blocked"]
+  cross_repo_blockers: []
 workspace:
   root: ~/code/workspaces
 hooks:
@@ -132,7 +151,8 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- `tracker.api_token` resolves `$GITHUB_TOKEN` by default when unset or when the value is the
+  literal `$GITHUB_TOKEN`. Other `$VAR` env-backed tokens are also resolved.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
@@ -140,7 +160,7 @@ Notes:
 
 ```yaml
 tracker:
-  api_key: $LINEAR_API_KEY
+  api_token: $GITHUB_TOKEN
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
@@ -178,19 +198,20 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
-Run the real external end-to-end test only when you want Symphony to create disposable Linear
-resources and launch a real `codex app-server` session:
+Run the real external end-to-end test only when you want Symphony to talk to a real GitHub
+Project v2 and launch a real `codex app-server` session:
 
 ```bash
 cd elixir
-export LINEAR_API_KEY=...
+export GITHUB_TOKEN=$(gh auth token)
 make e2e
 ```
 
 Optional environment variables:
 
-- `SYMPHONY_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E`
-- `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
+- `SYMPHONY_LIVE_GITHUB_OWNER` / `SYMPHONY_LIVE_GITHUB_REPO` / `SYMPHONY_LIVE_GITHUB_PROJECT_NUMBER`
+  point the live scenario at the GitHub Project v2 Symphony should drive.
+- `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list.
 
 `make e2e` runs two live scenarios:
 - one with a local worker
@@ -204,9 +225,10 @@ the transport representative without depending on long-lived external machines.
 
 Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
 
-The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
-a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
-Linear issue, then marks the project completed so the run remains visible in Linear.
+The live test creates a temporary GitHub issue inside the configured Project v2, writes a
+temporary `WORKFLOW.md`, runs a real agent turn, verifies the workspace side effect, requires
+Codex to comment on the issue and move its Status field to a terminal state, then archives or
+removes the disposable Project item so the run remains visible in GitHub.
 
 ## FAQ
 
