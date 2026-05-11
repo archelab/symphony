@@ -148,7 +148,16 @@ defmodule SymphonyElixir.TestSupport do
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
-          agent_workpad_enabled: nil,
+          # SPEC §11.8.9 (PR4 amendment): the schema default for
+          # `agent.workpad.enabled` is `true`. To keep individual tests
+          # authoring-light (they should only opt into workpad explicitly when
+          # they want to exercise §11.8 behavior), the fixture default writes
+          # an explicit `enabled: false` instead of leaving the block off,
+          # which would otherwise inherit the schema-on default and force
+          # every test fixture to also ship `codex.model` + workpad prompt
+          # prose. Tests that DO want workpad-enabled fixtures still pass
+          # `agent_workpad_enabled: true`, which suppresses this default.
+          agent_workpad_enabled: false,
           agent_workpad_version: nil,
           agent_workpad_max_sessions_visible: nil,
           agent_workpad_update_throttle_turns: nil,
