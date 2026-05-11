@@ -768,6 +768,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert log =~ "issue_id=\"#{issue_id}\""
     assert log =~ "issue_identifier=\"#{issue.identifier}\""
     assert log =~ "session_id=\"thread-down-normal\""
+
+    # §13.1 contract: the :DOWN site is the SINGLE termination point. Asserting
+    # the log alone would let a future refactor emit the log while leaking the
+    # running entry. Pin the state-mutation half.
+    #
+    # NOTE: we do NOT refute claimed-membership here. `claimed` is intentionally
+    # retained through the retry/continuation window as a defensive double-
+    # dispatch guard; it is released later by release_issue_claim/2 once the
+    # retry resolves (terminal, missing, or non-dispatchable).
+    state_after = :sys.get_state(pid)
+    refute Map.has_key?(state_after.running, issue_id)
   end
 
   test "agent crash exit emits §13.1 structured log with reason :agent_exit_crashed" do
@@ -824,6 +835,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert log =~ "issue_id=\"#{issue_id}\""
     assert log =~ "issue_identifier=\"#{issue.identifier}\""
     assert log =~ "session_id=\"thread-down-crash\""
+
+    # §13.1 contract: the :DOWN site is the SINGLE termination point. Asserting
+    # the log alone would let a future refactor emit the log while leaking the
+    # running entry. Pin the state-mutation half.
+    #
+    # NOTE: we do NOT refute claimed-membership here. `claimed` is intentionally
+    # retained through the retry/continuation window as a defensive double-
+    # dispatch guard; it is released later by release_issue_claim/2 once the
+    # retry resolves (terminal, missing, or non-dispatchable).
+    state_after = :sys.get_state(pid)
+    refute Map.has_key?(state_after.running, issue_id)
   end
 
   test "orchestrator snapshot includes retry backoff entries" do

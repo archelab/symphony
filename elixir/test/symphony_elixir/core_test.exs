@@ -924,7 +924,7 @@ defmodule SymphonyElixir.CoreTest do
       refute Map.has_key?(updated.running, "PVTI_y")
     end
 
-    test "apply_reconcile_running/2 drives the production call path end-to-end" do
+    test "apply_reconcile_running/2 pins the private reconcile entry point" do
       # Pin the production seam: reconcile_running_issues/1 ->
       # apply_reconcile_running/2 -> reconcile_running/4. A refactor that
       # bypasses apply_reconcile_running/2 would silently drop the
