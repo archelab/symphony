@@ -202,7 +202,7 @@ defmodule SymphonyElixir.Config.Schema do
 
       @primary_key false
       embedded_schema do
-        field(:enabled, :boolean, default: false)
+        field(:enabled, :boolean, default: true)
         field(:version, :string, default: "v1")
         field(:max_sessions_visible, :integer, default: 20)
         field(:update_throttle_turns, :integer, default: 3)

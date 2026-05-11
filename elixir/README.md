@@ -178,10 +178,12 @@ codex:
 
 ## Agent Workpad Protocol (SPEC §11.8)
 
-Optional cross-session memory for the coding agent. Disabled by default — opt in by copying
-`WORKFLOW.workpad.example.md` over your `WORKFLOW.md` and setting `agent.workpad.enabled: true`
-plus an explicit `codex.model` (so the sessions table records a stable model identifier rather
-than whatever `codex.command` resolves to).
+Cross-session memory for the coding agent. **Enabled by default** — opt out via
+`agent.workpad.enabled: false` in your `WORKFLOW.md` if you do not want the protocol to fire.
+The stock `elixir/WORKFLOW.md` shipped with this repo is the reference template: it includes
+the `agent.workpad` config block, an explicit `codex.model` (so the sessions table records a
+stable model identifier rather than whatever `codex.command` resolves to), and the
+agent-facing protocol instructions under "## Agent Workpad Protocol (SPEC §11.8)".
 
 When enabled and the dispatched item is an Issue or PullRequest, the orchestrator extends the
 prompt context with five additional Liquid variables — `thread_id`, `dispatched_at`, `model`,
@@ -193,9 +195,18 @@ See SPEC §11.8 for the full protocol.
 
 The orchestrator never writes to the workpad directly (SPEC §11.5 boundary): all mutations
 flow through the agent's `addComment` / `updateIssueComment` calls, gated by the allowlist in
-`Codex.GithubGraphqlTool`. When `agent.workpad.enabled` is `false` (the default), none of the
-five workpad variables are emitted, so the stock `WORKFLOW.md` shipped with this repo renders
-under Solid strict mode without referencing them.
+`Codex.GithubGraphqlTool`. When `agent.workpad.enabled` is `false`, none of the five workpad
+variables are emitted; Solid strict mode then rejects any template that still references them
+so the operator notices the half-flipped config immediately.
+
+**Migrating to default-on (SPEC §11.8.9):** deployments upgrading from a pre-PR3 `WORKFLOW.md`
+(no `agent.workpad` block, no `codex.model`, no workpad prose in the prompt) will now fail
+boot because the schema default flipped to `enabled: true` and SPEC §11.8.5 requires
+`codex.model` whenever the workpad fires. To resolve, either (a) set `agent.workpad.enabled:
+false` explicitly to keep pre-PR3 behavior, or (b) update your `WORKFLOW.md` to match the
+stock template (add the `agent.workpad` block, set `codex.model`, and include the workpad
+prompt section that references at least one of `{{ thread_id }}`, `{{ subject_id }}`,
+`{{ dispatched_at }}`, `{{ model }}`, `{% if prior_sessions %}`).
 
 **Operational caveats:** workpad rows are agent-self-reported snapshots, not audit records
 (SPEC §11.8.8) — cross-reference the orchestrator's §13.1 structured logs when a workpad row

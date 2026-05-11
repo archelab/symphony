@@ -2358,23 +2358,30 @@ Implementations MUST:
 
 #### 11.8.9 Configuration
 
-Workflows opt into the workpad protocol via the `agent.workpad` config block:
+Workflows configure the workpad protocol via the `agent.workpad` config block:
 
 ```yaml
 agent:
   workpad:
-    enabled: true               # default: false (back-compat)
+    enabled: true               # default: true (PR4 amendment)
     version: v1                 # MUST equal the marker version; only "v1" supported in this spec
     max_sessions_visible: 20    # rows before folding, default 20
     update_throttle_turns: 3    # min turns between updateIssueComment calls, default 3
 ```
 
-`agent.workpad.enabled: false` (the default) means the orchestrator MUST NOT
-emit the `thread_id`, `dispatched_at`, `model`, `subject_id`, or
-`prior_sessions` prompt variables, and the workflow template MUST NOT reference
-them. This preserves backward compatibility with workflows written before the
-protocol existed: any existing template that does not mention the variables
-renders identically to its pre-§11.8 behavior.
+`agent.workpad.enabled: true` (the default) means the orchestrator emits the
+five workpad prompt variables (`thread_id`, `dispatched_at`, `model`,
+`subject_id`, `prior_sessions`) whenever the dispatched item is an Issue or
+PullRequest, and the workflow template MUST reference at least one of those
+variables so the workpad bridge actually surfaces to the agent. The default
+flip pushes the protocol from opt-in to opt-out: implementations adopting the
+PR4 amendment expose the workpad to every dispatched session unless the
+operator explicitly opts out.
+
+`agent.workpad.enabled: false` means the orchestrator MUST NOT emit any of
+the five variables, and the workflow template MUST NOT reference them. Solid
+strict mode then rejects any template referencing them, surfacing the half-
+flipped config to the operator at boot time.
 
 `agent.workpad.version` MUST match the version embedded in the workpad marker
 (`<!-- symphony-workpad:v1 -->`). A future v2 protocol MUST bump both the
@@ -2384,8 +2391,32 @@ to read or write.
 
 `agent.workpad.enabled: true` requires the workflow template to include the
 agent-facing protocol instructions described in Section 11.8.3 (or equivalent
-prose). Implementations SHOULD ship a reference template snippet that operators
-can paste into their `WORKFLOW.md`.
+prose). Implementations SHOULD ship a reference `WORKFLOW.md` that satisfies
+this contract out of the box — operators copying the stock template into their
+repo SHOULD get a working workpad with no further wiring.
+
+**Migrating to default-on (PR4 amendment).** Deployments upgrading from an
+implementation that defaulted `enabled` to `false` (the original §11.8.9
+back-compat default) MUST take one of two paths on a pre-existing
+`WORKFLOW.md`:
+
+1. **Opt out explicitly.** Set `agent.workpad.enabled: false` in the existing
+   `WORKFLOW.md` front matter. The orchestrator preserves pre-PR4 behavior and
+   does not emit the five prompt variables.
+
+2. **Adopt the default-on protocol.** Add the `agent.workpad` block (any non-
+   `false` `enabled` value, or omit the block to inherit the on-default), add
+   `codex.model` (required by SPEC §11.8.5 cross-validation), and include the
+   §11.8.3 prompt prose in the body so `validate_workpad_template/1` (SPEC
+   §11.8.9) sees at least one workpad Liquid variable. Implementations MUST
+   refuse boot when this contract is partially satisfied (workpad implicitly
+   enabled via default + missing `codex.model`, or workpad-enabled config +
+   workpad-less prompt) so the migration step surfaces loud rather than
+   producing protocol-less prompts at runtime.
+
+The migration is intentionally breaking: a stock pre-PR3 `WORKFLOW.md` that
+neither opts out nor adopts the protocol fails boot until the operator picks
+a path.
 
 ## 12. Prompt Construction and Context Assembly
 

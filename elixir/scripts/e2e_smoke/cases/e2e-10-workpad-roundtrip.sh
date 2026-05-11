@@ -2,9 +2,10 @@
 # E2E-10: Agent Workpad Protocol round-trip (SPEC §11.8).
 #
 # 1. Swap WORKFLOW.md for a workpad-enabled variant (built per-run from
-#    workflow.smoke.md + WORKFLOW.workpad.example.md fragments — both the
-#    `agent.workpad` config block AND the prompt-template section that
-#    references {{ thread_id }}/prior_sessions are injected).
+#    workflow.smoke.md — the smoke file ships with `workpad: enabled: false`
+#    under SPEC §11.8.9 PR4 amendment, and this case flips that single line
+#    to `true`, expands the workpad block, and appends the prompt-template
+#    section that references {{ thread_id }}/prior_sessions).
 # 2. Create a fresh issue with AGENT PRIORITY INSTRUCTIONS to post a v1
 #    workpad comment containing the orchestrator-supplied {{ thread_id }},
 #    {{ model }}, etc.
@@ -62,21 +63,28 @@ sed -i.tmp -E \
   "$WORKFLOW"
 rm -f "$WORKFLOW.tmp"
 
-# Inject `workpad: enabled: true` under `agent:` and `model: "$MODEL"`
-# under `codex:`. We do this with awk so we can place the lines at the
-# correct indentation regardless of what the smoke file looked like.
+# Flip the smoke workflow's `workpad: enabled: false` → `enabled: true`
+# (SPEC §11.8.9 PR4 amendment: workflow.smoke.md ships with workpad
+# explicitly disabled so e2e-1..e2e-9 keep pre-PR4 behaviour). We also
+# expand the workpad block with `version`, `max_sessions_visible`, and
+# `update_throttle_turns` to make this case's intent explicit, and inject
+# `model: "$MODEL"` under `codex:`. Done with awk for indent-correct
+# placement that survives smoke YAML restructuring.
 awk -v model="$MODEL" '
-  BEGIN { injected_workpad = 0; injected_model = 0 }
-  /^agent:$/ { print; next }
-  /^codex:$/ {
-    if (!injected_workpad) {
-      print "  workpad:"
+  BEGIN { in_workpad = 0; expanded_workpad = 0; injected_model = 0 }
+  /^  workpad:$/ { in_workpad = 1; print; next }
+  in_workpad && /^    enabled: false$/ {
+    if (!expanded_workpad) {
       print "    enabled: true"
       print "    version: v1"
       print "    max_sessions_visible: 20"
       print "    update_throttle_turns: 3"
-      injected_workpad = 1
+      expanded_workpad = 1
     }
+    next
+  }
+  in_workpad && /^[^ ]/ { in_workpad = 0 }
+  /^codex:$/ {
     print
     print "  model: \"" model "\""
     injected_model = 1
@@ -326,7 +334,7 @@ while (( prompt_wait < 30 )); do
 done
 
 # The second dispatch's prompt MUST contain the first session's thread_id
-# rendered under `Prior sessions` — see WORKFLOW.workpad.example.md:164:
+# rendered under `Prior sessions` — see elixir/WORKFLOW.md "Prior sessions"
 #   - `{{ s.thread_id }}` attempt={{ s.attempt }} ...
 # After Solid render, the literal token is the bare UUIDv7 (no backticks
 # inside JSON because the rollout stores the rendered text in

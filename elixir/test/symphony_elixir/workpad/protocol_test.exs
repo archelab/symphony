@@ -37,6 +37,7 @@ defmodule SymphonyElixir.Workpad.ProtocolTest do
     assert w.version == Protocol.default_version()
     assert w.max_sessions_visible == Protocol.default_max_sessions_visible()
     assert w.update_throttle_turns == Protocol.default_update_throttle_turns()
-    refute w.enabled
+    # SPEC §11.8.9 (PR4 amendment): workpad enabled by default.
+    assert w.enabled
   end
 end

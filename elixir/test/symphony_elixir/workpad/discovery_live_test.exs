@@ -94,7 +94,7 @@ defmodule SymphonyElixir.Workpad.DiscoveryLiveTest do
     assert length(first_page) == 100, "Page 1 should be saturated at first: 100"
 
     # 4. Scan each page for a comment whose trimmed body starts with the
-    #    workpad marker (mirrors `WORKFLOW.workpad.example.md` §"Find or
+    #    workpad marker (mirrors `elixir/WORKFLOW.md` §"Find or
     #    create the workpad" step 1).
     located_on_page =
       pages

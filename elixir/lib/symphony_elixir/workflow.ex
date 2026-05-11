@@ -112,8 +112,15 @@ defmodule SymphonyElixir.Workflow do
     end
   end
 
-  defp workpad_enabled?(%{"agent" => %{"workpad" => %{"enabled" => true}}}), do: true
-  defp workpad_enabled?(_), do: false
+  # SPEC §11.8.9 (PR4 amendment): workpad defaults to enabled. The validation
+  # fires whenever the operator has NOT explicitly opted out via
+  # `agent.workpad.enabled: false`, mirroring `Config.Schema.Agent.Workpad`'s
+  # `default: true`. Pre-PR3 templates without a workpad block (and without a
+  # workpad section in the prompt) hit this branch and fail loud at boot —
+  # exactly the migration signal documented in the SPEC's "Migrating to
+  # default-on" note.
+  defp workpad_enabled?(%{"agent" => %{"workpad" => %{"enabled" => false}}}), do: false
+  defp workpad_enabled?(_), do: true
 
   # Match Liquid output tags (`{{ … }}`) and control-flow tags (`{% … %}`).
   # `\b` plus `Regex.escape/1` keep the match anchored to the literal variable

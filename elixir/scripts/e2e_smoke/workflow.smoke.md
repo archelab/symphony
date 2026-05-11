@@ -28,6 +28,14 @@ hooks:
 agent:
   max_concurrent_agents: 3
   max_turns: 1
+  # SPEC §11.8.9 (PR4 amendment): the schema default for
+  # `agent.workpad.enabled` is `true`. The smoke harness explicitly opts out
+  # so e2e-1..e2e-9 keep behaving as pre-PR4 (no workpad bridge, no
+  # `codex.model` requirement, no §11.8.9 template validation). e2e-10's
+  # awk transform flips this single line back to `true` for its workpad
+  # round-trip case.
+  workpad:
+    enabled: false
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.4-mini"' --config model_reasoning_effort=minimal app-server
   approval_policy: never
