@@ -19,7 +19,7 @@ defmodule Mix.Tasks.PrBody.Check do
 
   @impl Mix.Task
   def run(args) do
-    {opts, _argv, invalid} = OptionParser.parse(args, strict: [file: :string, help: :boolean], aliases: [h: :help])
+    {opts, argv, invalid} = OptionParser.parse(args, strict: [file: :string, help: :boolean], aliases: [h: :help])
 
     cond do
       opts[:help] ->
@@ -27,6 +27,9 @@ defmodule Mix.Tasks.PrBody.Check do
 
       invalid != [] ->
         Mix.raise("Invalid option(s): #{inspect(invalid)}")
+
+      argv != [] ->
+        Mix.raise("Unexpected argument(s): #{Enum.join(argv, ", ")}")
 
       true ->
         file_path = required_opt(opts, :file)
