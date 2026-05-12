@@ -62,10 +62,9 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "workflow load accepts prompt-only files when workpad + session_summary are explicitly disabled (SPEC §11.8.9 + 11.8.10 opt-out)" do
-    # The operator-facing migration path from the PR4 amendment: both
-    # workpad (SPEC §11.8.9) and session-summary (SPEC §11.8.10) default to
-    # enabled. To preserve pre-PR4 prompt-only loading, both must be
-    # explicitly disabled.
+    # Workpad (SPEC §11.8.9) still defaults to enabled, so prompt-only files
+    # must opt out of it. Session-summary is opt-in, but this fixture keeps the
+    # opt-out explicit so older prompt-only workflows remain unambiguous.
     workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "PROMPT_ONLY_OPTED_OUT.md")
 
     File.write!(

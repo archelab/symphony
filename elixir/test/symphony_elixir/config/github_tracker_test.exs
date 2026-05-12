@@ -3,13 +3,10 @@ defmodule SymphonyElixir.Config.GithubTrackerTest do
 
   alias SymphonyElixir.Config.Schema
 
-  # SPEC §11.8.9 + §11.8.10 PR4 amendment: both `agent.workpad.enabled` AND
-  # `agent.session_summary.enabled` default to `true`, each forcing its own
-  # cross-validation (requires `codex.model`). These tracker-focused tests
-  # pre-date both features and assert behaviors orthogonal to them, so we
-  # explicitly opt out of BOTH here. Workpad behavior is exercised in
-  # `Config.WorkpadTest`; session-summary behavior in
-  # `Config.SessionSummaryTest`.
+  # `agent.workpad.enabled` defaults to true and forces its own `codex.model`
+  # cross-validation. These tracker-focused tests pre-date workpad and assert
+  # behaviors orthogonal to it, so we explicitly opt out here. Session-summary
+  # is opt-in and covered in `Config.SessionSummaryTest`.
   defp parse(config) do
     agent = Map.get(config, "agent", %{})
     workpad = Map.merge(%{"enabled" => false}, Map.get(agent, "workpad", %{}))

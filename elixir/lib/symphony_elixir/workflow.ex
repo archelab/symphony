@@ -133,7 +133,7 @@ defmodule SymphonyElixir.Workflow do
   defp workpad_enabled?(_), do: true
 
   # SPEC §11.8.10: a workflow whose front matter opts INTO session-summary
-  # comments (the default — `agent.session_summary.enabled: true`) MUST have
+  # comments (`agent.session_summary.enabled: true`) MUST have
   # a prompt template that references at least one of `thread_id`,
   # `subject_id`, or `dispatched_at`. Without those bindings the agent's
   # rendered prompt would carry no per-session identity and the audit
@@ -160,7 +160,10 @@ defmodule SymphonyElixir.Workflow do
   defp session_summary_enabled?(%{"agent" => %{"session_summary" => %{"enabled" => false}}}),
     do: false
 
-  defp session_summary_enabled?(_), do: true
+  defp session_summary_enabled?(%{"agent" => %{"session_summary" => %{"enabled" => true}}}),
+    do: true
+
+  defp session_summary_enabled?(_), do: false
 
   # Match Liquid output tags (`{{ … }}`) and control-flow tags (`{% … %}`).
   # `\b` plus `Regex.escape/1` keep the match anchored to the literal variable

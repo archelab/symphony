@@ -51,12 +51,9 @@ defmodule SymphonyElixir.Workpad.TemplateValidationTest do
   ---
   """
 
-  # SPEC §11.8.10 PR4: session-summary ALSO defaults to enabled at the schema
-  # level, so opting out of the workpad is no longer sufficient — we must
-  # also opt out of the summary protocol to keep this "workpad disabled, no
-  # validation fires" fixture honest. The replacement injects the
-  # `session_summary` block at the same indent as `workpad` (2 spaces under
-  # `agent:`, 4 spaces for fields).
+  # Keep both protocols explicit in this fixture so the test stays focused on
+  # "workpad disabled, no validation fires" if defaults change again later.
+  # The replacement injects `session_summary` at the same indent as `workpad`.
   @disabled_front_matter @valid_front_matter
                          |> String.replace("enabled: true", "enabled: false")
                          |> String.replace(

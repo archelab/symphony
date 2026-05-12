@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Config.SessionSummaryTest do
 
   The session-summary protocol is independent of the workpad protocol: each
   has its own `enabled` flag, its own cross-validation, and its own template
-  validation. These tests cover the four-quadrant matrix
+  validation when enabled. These tests cover the four-quadrant matrix
   `(workpad on/off) × (summary on/off)` and the cross-validation that fires
   whenever `agent.session_summary.enabled: true` but `codex.model` is unset.
   """
@@ -26,18 +26,13 @@ defmodule SymphonyElixir.Config.SessionSummaryTest do
     Schema.parse(Map.merge(base, attrs))
   end
 
-  test "agent.session_summary defaults to enabled (SPEC §11.8.10 PR4)" do
-    # SPEC §11.8.10 cross-validation requires `codex.model` when enabled, so
-    # supply it to focus this assertion on the *default flip*.
+  test "agent.session_summary defaults to disabled (SPEC §11.8.10 opt-in)" do
     assert {:ok, settings} =
              parse(%{
-               # Opt out of workpad so its cross-validation does not also
-               # fire — this test focuses on session_summary only.
-               "agent" => %{"workpad" => %{"enabled" => false}},
-               "codex" => %{"model" => "gpt-5.5"}
+               "agent" => %{"workpad" => %{"enabled" => false}}
              })
 
-    assert settings.agent.session_summary.enabled == true
+    assert settings.agent.session_summary.enabled == false
     assert settings.agent.session_summary.version == "v1"
   end
 
@@ -71,8 +66,10 @@ defmodule SymphonyElixir.Config.SessionSummaryTest do
     # a data-integrity bug, so we refuse boot.
     assert {:error, {:invalid_workflow_config, msg}} =
              parse(%{
-               "agent" => %{"workpad" => %{"enabled" => false}}
-               # session_summary defaults to enabled; no codex.model set.
+               "agent" => %{
+                 "workpad" => %{"enabled" => false},
+                 "session_summary" => %{"enabled" => true}
+               }
              })
 
     assert msg =~ "session_summary"

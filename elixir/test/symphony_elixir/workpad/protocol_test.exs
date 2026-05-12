@@ -85,7 +85,7 @@ defmodule SymphonyElixir.Workpad.ProtocolTest do
   test "SessionSummary schema defaults match Protocol session-summary defaults" do
     s = struct(SymphonyElixir.Config.Schema.Agent.SessionSummary)
     assert s.version == Protocol.session_summary_default_version()
-    # SPEC §11.8.10 (PR4): independent of workpad, defaults to enabled.
-    assert s.enabled
+    # SPEC §11.8.10: independent of workpad, opt-in by default.
+    refute s.enabled
   end
 end

@@ -36,12 +36,8 @@ agent:
   # round-trip case.
   workpad:
     enabled: false
-  # SPEC §11.8.10 (PR4): the schema default for
-  # `agent.session_summary.enabled` is `true`, requiring `codex.model` AND a
-  # prompt that references at least one of `thread_id`, `subject_id`,
-  # `dispatched_at`. The smoke harness explicitly opts out so e2e-1..e2e-9
-  # keep pre-PR4 behaviour. e2e-10 flips this back to true alongside the
-  # workpad flip.
+  # SPEC §11.8.10: session summary is opt-in. Keep it explicit here so smoke
+  # prompts stay quiet unless a case deliberately enables audit comments.
   session_summary:
     enabled: false
 codex:

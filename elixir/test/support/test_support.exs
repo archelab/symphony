@@ -173,13 +173,9 @@ defmodule SymphonyElixir.TestSupport do
           agent_workpad_version: nil,
           agent_workpad_max_sessions_visible: nil,
           agent_workpad_update_throttle_turns: nil,
-          # SPEC §11.8.10 (PR4 addition): same opt-out reasoning as
-          # `agent_workpad_enabled` above — the session-summary protocol
-          # defaults to enabled at the schema level and forces SPEC §11.8.10
-          # cross-validation (`codex.model` required, template MUST reference
-          # at least one of `thread_id`, `subject_id`, `dispatched_at`). The
-          # vast majority of pre-PR4 tests are orthogonal to summary
-          # comments; they opt out by default.
+          # SPEC §11.8.10: session-summary is opt-in. Most tests stay quiet by
+          # default; tests that cover audit comments pass
+          # `agent_session_summary_enabled: true` explicitly.
           agent_session_summary_enabled: false,
           agent_session_summary_version: nil,
           codex_command: "codex app-server",

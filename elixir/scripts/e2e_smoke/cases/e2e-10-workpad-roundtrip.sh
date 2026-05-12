@@ -63,22 +63,19 @@ sed -i.tmp -E \
   "$WORKFLOW"
 rm -f "$WORKFLOW.tmp"
 
-# Flip the smoke workflow's `workpad: enabled: false` → `enabled: true` AND
-# `session_summary: enabled: false` → `enabled: true` (SPEC §11.8.9 + 11.8.10
-# PR4 amendment: workflow.smoke.md ships with both explicitly disabled so
-# e2e-1..e2e-9 keep pre-PR4 behaviour). We also expand the workpad block
-# with `version`, `max_sessions_visible`, and `update_throttle_turns` to
-# make this case's intent explicit, and inject `model: "$MODEL"` under
-# `codex:`. Done with awk for indent-correct placement that survives smoke
-# YAML restructuring.
+# Flip the smoke workflow's `workpad: enabled: false` → `enabled: true`.
+# Session-summary remains disabled: e2e-10 is the workpad round-trip case, not
+# the append-only audit-comment case. We also expand the workpad block with
+# `version`, `max_sessions_visible`, and `update_throttle_turns` to make this
+# case's intent explicit, and inject `model: "$MODEL"` under `codex:`. Done
+# with awk for indent-correct placement that survives smoke YAML restructuring.
 awk -v model="$MODEL" '
   BEGIN {
     in_workpad = 0; expanded_workpad = 0
-    in_summary = 0; flipped_summary = 0
     injected_model = 0
   }
-  /^  workpad:$/ { in_workpad = 1; in_summary = 0; print; next }
-  /^  session_summary:$/ { in_summary = 1; in_workpad = 0; print; next }
+  /^  workpad:$/ { in_workpad = 1; print; next }
+  /^  session_summary:$/ { in_workpad = 0; print; next }
   in_workpad && /^    enabled: false$/ {
     if (!expanded_workpad) {
       print "    enabled: true"
@@ -89,15 +86,7 @@ awk -v model="$MODEL" '
     }
     next
   }
-  in_summary && /^    enabled: false$/ {
-    if (!flipped_summary) {
-      print "    enabled: true"
-      print "    version: v1"
-      flipped_summary = 1
-    }
-    next
-  }
-  (in_workpad || in_summary) && /^[^ ]/ { in_workpad = 0; in_summary = 0 }
+  in_workpad && /^[^ ]/ { in_workpad = 0 }
   /^codex:$/ {
     print
     print "  model: \"" model "\""
@@ -141,9 +130,6 @@ grep -q "^  model: \"$MODEL\"\$" "$WORKFLOW" || e2e::verdict_fail \
   "WORKFLOW augmentation failed: codex.model not injected"
 grep -q "Agent Workpad Protocol (SPEC §11.8)" "$WORKFLOW" || e2e::verdict_fail \
   "WORKFLOW augmentation failed: workpad prompt section not appended"
-grep -q '^  session_summary:$' "$WORKFLOW" || e2e::verdict_fail \
-  "WORKFLOW augmentation failed: session_summary: block not injected (smoke YAML changed?)"
-
 ORCH_LOG="$E2E_LOG_DIR/run.log"
 e2e::start_orchestrator "$ORCH_LOG"
 
@@ -163,9 +149,9 @@ read -r ISSUE_NUM ISSUE_NODE_ID < <(e2e::create_test_issue "[smoke] E2E-10 workp
 # is told to use the orchestrator-supplied {{ thread_id }} verbatim; if it
 # writes `unknown` instead, that is a §11.8.8 truthfulness violation that
 # the orchestrator-log cross-check below will catch.
-BODY="Smoke test. AGENT PRIORITY INSTRUCTION: Post TWO comments to this issue via the github_graphql tool, in order.
+BODY="Smoke test. AGENT PRIORITY INSTRUCTION: Post ONE workpad comment to this issue via the github_graphql tool.
 
-(1) WORKPAD COMMENT — body MUST begin with the line:
+The comment body MUST begin with the line:
 
 <!-- symphony-workpad:v1 -->
 
@@ -180,15 +166,7 @@ mutation {
 }
 \`\`\`
 
-(2) SESSION-SUMMARY COMMENT (SPEC §11.8.10) — second addComment with a body that BEGINS with the marker line:
-
-<!-- symphony-session-summary:<THREAD_ID>:v1 -->
-
-(substituting the orchestrator-supplied thread_id verbatim), followed by Session/Attempt/Dispatched/Completed/Duration/Model/Stop reason header lines, then a one-line summary, and ending with:
-
-<!-- /symphony-session-summary:<THREAD_ID>:v1 -->
-
-After both comments are posted, end the turn immediately. Do not make code changes."
+After the workpad comment is posted, end the turn immediately. Do not post a session-summary comment. Do not make code changes."
 gh issue edit "$ISSUE_NUM" -R "$SYMPHONY_E2E_PROJECT_OWNER/$SYMPHONY_E2E_REPO" --body "$BODY" >/dev/null
 
 ITEM_ID=$(e2e::add_to_project "$ISSUE_NODE_ID")
@@ -218,29 +196,6 @@ if [[ -z "$marker_body" ]]; then
 fi
 
 echo "first_workpad_body_head=$(printf '%s' "$marker_body" | awk 'NR==1{printf "%.200s", $0; exit}')"
-
-# SPEC §11.8.10: assert a session-summary comment lands on the issue
-# alongside the workpad. The marker shape is
-# `<!-- symphony-session-summary:<thread_id>:v1 -->`; since we don't know
-# the thread_id at this point (it's extracted from symphony.log below), we
-# match the marker prefix only.
-summary_elapsed=0
-summary_body=""
-while (( summary_elapsed < 60 )); do
-  comments_json=$(gh issue view "$ISSUE_NUM" -R "$SYMPHONY_E2E_PROJECT_OWNER/$SYMPHONY_E2E_REPO" --json comments 2>/dev/null || echo '{}')
-  summary_body=$(jq -r '.comments[]?.body | select(. != null) | select(contains("<!-- symphony-session-summary:"))' <<<"$comments_json" | awk 'NR==1{print; exit}')
-  if [[ -n "$summary_body" ]]; then
-    break
-  fi
-  sleep 5
-  (( summary_elapsed+=5 ))
-done
-
-if [[ -z "$summary_body" ]]; then
-  e2e::verdict_partial "no symphony-session-summary marker on issue within 60s — agent did not post §11.8.10 audit comment. Likely smoke-mode model ignored the second instruction."
-else
-  echo "first_session_summary_head=$(printf '%s' "$summary_body" | awk 'NR==1{printf "%.200s", $0; exit}')"
-fi
 
 # Wait for first turn to exit cleanly.
 e2e::wait_for_log_line "worker stop reason=:agent_exit_normal issue_id=\"$ITEM_ID\"" 60 || \

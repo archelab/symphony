@@ -32,6 +32,8 @@ agent:
     version: v1
     max_sessions_visible: 20
     update_throttle_turns: 3
+  session_summary:
+    enabled: false
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
   model: "gpt-5.5"
@@ -131,6 +133,8 @@ project does not make it obvious.
 Open work on a feature branch and submit a Pull Request against
 `{{ issue.repository.default_branch }}`. Do not commit to
 `{{ issue.repository.default_branch }}` directly.
+When opening the PR, include an official closing/linking keyword in the PR body
+so GitHub links the PR to this issue, for example: `Closes #{{ issue.number }}`.
 {% endif %}
 
 Both `pr.base_ref_name` and `repository.default_branch` come straight from
@@ -180,34 +184,6 @@ primary-quota exhaustion (`rateLimit.resetAt`), wait for reset before the next a
 The orchestrator's §13.1 structured logs remain the authoritative session record while
 the workpad is unwritable.
 
-## Per-session summary (SPEC §11.8.10)
-
-On your FINAL turn before voluntary completion (AFTER updating the workpad sessions
-table), post a NEW comment via `github_graphql.addComment(input: {subjectId:
-"{{ subject_id }}", body: $body})` with this exact shape:
-
-```
-<!-- symphony-session-summary:{{ thread_id }}:v1 -->
-Session: {{ thread_id }}
-Attempt: {{ attempt }}
-Dispatched: {{ dispatched_at }}
-Completed: <fill in with wall-clock UTC at final-turn time>
-Duration: <H>h<M>m<S>s
-Model: {{ model }}
-Stop reason: agent_exit_normal
-
-<Freeform summary: 3–10 sentences. Goal, plan, key actions taken, code references,
-open questions. Bullet points and links to PRs/commits are encouraged.>
-<!-- /symphony-session-summary:{{ thread_id }}:v1 -->
-```
-
-The marker embeds `{{ thread_id }}` so each session has a uniquely-addressable audit
-comment that future operators can grep without joining against orchestrator logs.
-
-**Append-only.** Do NOT edit or delete any prior session-summary comment. The §11.8.10
-audit trail is the permanent record of every dispatch; corrections go in a NEW summary
-comment on the next session, not by overwriting an old one.
-
 ## Status-transition rituals
 
 You only ever flip the Project Status. Before doing so, ALWAYS execute the
@@ -251,13 +227,11 @@ When the work is ready for a human:
 
 1. Close your workpad row.
 2. Flip Status to Done.
-3. The §11.8.10 per-session summary fires on session end as usual.
 
-Note: the §11.8.10 per-session summary comment is APPEND-ONLY and fires
-on every session end. The Blocker report and Reviewer notes above are
-SEPARATE comments, intentional human-facing prose, posted by you while
-you're still alive — the orchestrator may SIGTERM you the moment Status
-goes inactive, so writing them after the Status flip is too late.
+Note: the workpad is the default visible state. The Blocker report and
+Reviewer notes above are SEPARATE comments, intentional human-facing prose,
+posted by you while you're still alive — the orchestrator may SIGTERM you the
+moment Status goes inactive, so writing them after the Status flip is too late.
 
 ## Stopping conditions
 

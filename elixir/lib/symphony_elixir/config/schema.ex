@@ -222,8 +222,10 @@ defmodule SymphonyElixir.Config.Schema do
       @moduledoc """
       Per-session summary comment configuration (SPEC §11.8.10).
 
-      Independent of the workpad protocol. Defaults to enabled — every
-      dispatched session emits a permanent audit comment with the
+      Independent of the workpad protocol. Defaults to disabled so normal
+      GitHub threads stay centered on the rolling workpad comment. When
+      explicitly enabled, every dispatched session emits a permanent audit
+      comment with the
       `<!-- symphony-session-summary:<thread_id>:<version> -->` marker. The
       summary surfaces the session's lifecycle (Dispatched, Completed,
       Duration, Model, Stop reason) plus a freeform body that future
@@ -236,7 +238,7 @@ defmodule SymphonyElixir.Config.Schema do
 
       @primary_key false
       embedded_schema do
-        field(:enabled, :boolean, default: true)
+        field(:enabled, :boolean, default: false)
         field(:version, :string, default: "v1")
       end
 
