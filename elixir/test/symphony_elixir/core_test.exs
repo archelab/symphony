@@ -1368,6 +1368,180 @@ defmodule SymphonyElixir.CoreTest do
              Map.fetch!(state_after.completed, issue_id)
   end
 
+  test "completed_sessions_for returns identifier matches ordered by completed_at desc and capped" do
+    orchestrator_name = Module.concat(__MODULE__, :CompletedSessionsLookupOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    records =
+      for i <- 1..25 do
+        %{
+          issue_id: "issue-completed-lookup",
+          identifier: "archelab/symphony#lookup",
+          thread_id: "thr-#{i}",
+          attempt: i,
+          dispatched_at: "2026-05-12T01:00:00Z",
+          completed_at: "2026-05-12T01:00:#{String.pad_leading(Integer.to_string(rem(i, 60)), 2, "0")}Z",
+          duration_ms: i,
+          model: nil,
+          stop_reason: :agent_exit_normal
+        }
+      end
+
+    :sys.replace_state(pid, fn state ->
+      Map.put(state, :completed, %{
+        "issue-completed-lookup" => Enum.reverse(records),
+        "issue-other" => [
+          %{
+            issue_id: "issue-other",
+            identifier: "archelab/symphony#other",
+            thread_id: "thr-other",
+            attempt: 1,
+            dispatched_at: "2026-05-12T01:00:00Z",
+            completed_at: "2026-05-12T02:00:00Z",
+            duration_ms: 1,
+            model: nil,
+            stop_reason: :agent_exit_normal
+          }
+        ]
+      })
+    end)
+
+    sessions = Orchestrator.completed_sessions_for("archelab/symphony#lookup", orchestrator_name, 5_000)
+
+    assert length(sessions) == 20
+    assert hd(sessions).thread_id == "thr-25"
+    assert List.last(sessions).thread_id == "thr-6"
+    assert Orchestrator.completed_sessions_for("archelab/symphony#missing", orchestrator_name, 5_000) == []
+  end
+
+  test "reconcile termination sends wrap-up signal and records normal exit with final intent" do
+    write_workflow_file!(Workflow.workflow_file_path(), agent_graceful_termination_budget_ms: 500)
+
+    issue_id = "PVTI_graceful_wrap"
+    parent = self()
+
+    worker =
+      spawn(fn ->
+        receive do
+          {:symphony_wrap_up, payload} ->
+            send(parent, {:wrap_up_received, payload})
+            :ok
+        end
+      end)
+
+    ref = Process.monitor(worker)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: worker,
+      ref: ref,
+      issue_id: issue_id,
+      issue_identifier: "archelab/symphony#910",
+      identifier: "archelab/symphony#910",
+      issue: %Issue{id: issue_id, identifier: "archelab/symphony#910", kind: "issue", state: "Blocked", issue_state: "OPEN"},
+      worker_host: nil,
+      workspace_path: nil,
+      session_id: "thread-wrap-turn-1",
+      blocked_by_snapshot: [],
+      started_at: started_at,
+      dispatched_at: DateTime.to_iso8601(started_at),
+      thread_id: "thread-wrap",
+      model: "gpt-5.4-mini",
+      retry_attempt: 1
+    }
+
+    state_before =
+      %Orchestrator.State{}
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:codex_totals, %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0})
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        state_after =
+          Orchestrator.apply_reconcile_running_for_test(state_before, [
+            %{id: issue_id, state: "Blocked", blocked_by: []}
+          ])
+
+        assert_receive {:wrap_up_received, %{reason: :inactive_state, budget_ms: 500}}
+        refute Process.alive?(worker)
+        refute Map.has_key?(state_after.running, issue_id)
+
+        assert [%{stop_reason: :agent_exit_normal, identifier: "archelab/symphony#910"} | _] =
+                 Map.fetch!(state_after.completed, issue_id)
+      end)
+
+    assert log =~ "reason=:agent_exit_normal"
+    assert log =~ "final_intent=:inactive_state"
+  end
+
+  test "reconcile termination kills worker after wrap-up budget expires" do
+    write_workflow_file!(Workflow.workflow_file_path(), agent_graceful_termination_budget_ms: 10)
+
+    issue_id = "PVTI_graceful_timeout"
+    parent = self()
+
+    worker =
+      spawn(fn ->
+        receive do
+          {:symphony_wrap_up, payload} ->
+            send(parent, {:wrap_up_received, payload})
+            Process.sleep(:infinity)
+        end
+      end)
+
+    ref = Process.monitor(worker)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: worker,
+      ref: ref,
+      issue_id: issue_id,
+      issue_identifier: "archelab/symphony#911",
+      identifier: "archelab/symphony#911",
+      issue: %Issue{id: issue_id, identifier: "archelab/symphony#911", kind: "issue", state: "Done", issue_state: "CLOSED"},
+      worker_host: nil,
+      workspace_path: nil,
+      session_id: "thread-timeout-turn-1",
+      blocked_by_snapshot: [],
+      started_at: started_at,
+      dispatched_at: DateTime.to_iso8601(started_at),
+      thread_id: "thread-timeout",
+      model: nil,
+      retry_attempt: 0
+    }
+
+    state_before =
+      %Orchestrator.State{}
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:codex_totals, %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0})
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        state_after =
+          Orchestrator.apply_reconcile_running_for_test(state_before, [
+            %{id: issue_id, state: "<closed>", blocked_by: []}
+          ])
+
+        assert_receive {:wrap_up_received, %{reason: :terminal_or_closed, budget_ms: 10}}
+        refute Map.has_key?(state_after.running, issue_id)
+
+        assert [%{stop_reason: :terminal_or_closed} | _] =
+                 Map.fetch!(state_after.completed, issue_id)
+      end)
+
+    refute Process.alive?(worker)
+    assert log =~ "reason=:terminal_or_closed"
+    assert log =~ "graceful=false"
+  end
+
   test "prompt builder renders issue and attempt values from workflow template" do
     workflow_prompt =
       "Ticket {{ issue.identifier }} {{ issue.title }} labels={{ issue.labels }} attempt={{ attempt }}"
@@ -1793,6 +1967,102 @@ defmodule SymphonyElixir.CoreTest do
                      500
 
       assert session_id == "thread-live-turn-live"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner turns wrap-up signal into one final Codex turn" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-wrap-up-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(
+        codex_binary,
+        """
+        #!/bin/sh
+        turn_count=0
+        trace_file="${SYMP_TEST_CODEX_TRACE:-/tmp/symphony-wrap.trace}"
+        while IFS= read -r line; do
+          printf '%s\\n' "$line" >> "$trace_file"
+          case "$line" in
+            *'"method":"initialize"'*)
+              printf '%s\\n' '{"id":1,"result":{}}'
+              ;;
+            *'"method":"thread/start"'*)
+              printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-wrap"}}}'
+              ;;
+            *'"method":"turn/start"'*)
+              turn_count=$((turn_count + 1))
+              if [ "$turn_count" -eq 1 ]; then
+                printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-main"}}}'
+              else
+                printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-wrap"}}}'
+                printf '%s\\n' '{"method":"turn/completed"}'
+              fi
+              ;;
+          esac
+        done
+        """
+      )
+
+      File.chmod!(codex_binary, 0o755)
+      previous_trace = System.get_env("SYMP_TEST_CODEX_TRACE")
+      System.put_env("SYMP_TEST_CODEX_TRACE", trace_file)
+
+      on_exit(fn -> restore_env("SYMP_TEST_CODEX_TRACE", previous_trace) end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-wrap-up-turn",
+        identifier: "MT-WRAP",
+        title: "Wrap up",
+        description: "Final turn",
+        state: "In Progress"
+      }
+
+      test_pid = self()
+
+      task =
+        Task.async(fn ->
+          AgentRunner.run(
+            issue,
+            test_pid,
+            issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "In Progress"}]} end
+          )
+        end)
+
+      assert_receive {:codex_worker_update, "issue-wrap-up-turn", %{event: :session_started, session_id: "thread-wrap-turn-main"}}, 1_000
+
+      send(task.pid, {:symphony_wrap_up, %{reason: :inactive_state, budget_ms: 30_000}})
+
+      assert :ok = Task.await(task, 5_000)
+      trace = File.read!(trace_file)
+
+      assert trace =~ "Symphony is terminating this worker."
+      assert trace =~ "Reason: `inactive_state`"
+      assert trace =~ "## Blocker report"
     after
       File.rm_rf(test_root)
     end

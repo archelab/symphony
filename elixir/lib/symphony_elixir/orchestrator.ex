@@ -73,10 +73,12 @@ defmodule SymphonyElixir.Orchestrator do
     """
     @type session_record :: %{
             required(:thread_id) => String.t() | nil,
+            required(:issue_id) => String.t(),
             required(:attempt) => non_neg_integer(),
             required(:dispatched_at) => String.t(),
             required(:completed_at) => String.t(),
             required(:duration_ms) => non_neg_integer(),
+            required(:identifier) => String.t() | nil,
             required(:model) => String.t() | nil,
             required(:stop_reason) => atom() | nil
           }
@@ -507,7 +509,9 @@ defmodule SymphonyElixir.Orchestrator do
         release_issue_claim(state, issue_id)
 
       %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
-        log_worker_stop(running_entry, reason)
+        graceful_result = request_graceful_worker_stop(pid, ref, reason)
+        logged_reason = logged_stop_reason(reason, graceful_result)
+        log_worker_stop(running_entry, logged_reason, stop_log_fields(reason, graceful_result))
         state = record_session_completion_totals(state, running_entry)
         worker_host = Map.get(running_entry, :worker_host)
 
@@ -515,7 +519,7 @@ defmodule SymphonyElixir.Orchestrator do
           cleanup_issue_workspace(identifier, worker_host)
         end
 
-        if is_pid(pid) do
+        if graceful_result == :timeout and is_pid(pid) do
           terminate_task(pid)
         end
 
@@ -528,7 +532,7 @@ defmodule SymphonyElixir.Orchestrator do
         # dropped. Stall restart re-dispatches under a NEW Codex thread id,
         # producing a distinct workpad row keyed by thread (not attempt), so
         # recording it does not double-count the run.
-        state = complete_issue(state, issue_id, running_entry, reason)
+        state = complete_issue(state, issue_id, running_entry, logged_reason)
 
         %{
           state
@@ -551,22 +555,61 @@ defmodule SymphonyElixir.Orchestrator do
   # conditions and log at :warning. All other reasons (clean orchestrator
   # decisions, terminal-state moves, dependency reopens, normal exits) log at
   # :info so quiet operation stays quiet.
-  defp log_worker_stop(running_entry, reason) when is_map(running_entry) and is_atom(reason) do
+  defp request_graceful_worker_stop(pid, ref, reason)
+       when is_pid(pid) and is_reference(ref) and is_atom(reason) do
+    budget_ms = Config.settings!().agent.graceful_termination_budget_ms
+
+    cond do
+      budget_ms <= 0 ->
+        :timeout
+
+      !Process.alive?(pid) ->
+        :already_exited
+
+      true ->
+        send(pid, {:symphony_wrap_up, %{reason: reason, budget_ms: budget_ms}})
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, down_reason} -> {:exited, down_reason}
+        after
+          budget_ms -> :timeout
+        end
+    end
+  end
+
+  defp request_graceful_worker_stop(_pid, _ref, _reason), do: :timeout
+
+  defp logged_stop_reason(_original_reason, {:exited, :normal}), do: :agent_exit_normal
+  defp logged_stop_reason(_original_reason, {:exited, _reason}), do: :agent_exit_crashed
+  defp logged_stop_reason(_original_reason, :already_exited), do: :agent_exit_normal
+  defp logged_stop_reason(original_reason, :timeout), do: original_reason
+
+  defp stop_log_fields(original_reason, {:exited, _down_reason}), do: [final_intent: original_reason]
+  defp stop_log_fields(original_reason, :already_exited), do: [final_intent: original_reason]
+  defp stop_log_fields(_original_reason, :timeout), do: [graceful: false]
+
+  defp log_worker_stop(running_entry, reason, extra_fields \\ []) when is_map(running_entry) and is_atom(reason) do
     issue_id = Map.get(running_entry, :issue_id) || Map.get(running_entry, :id)
 
     issue_identifier =
       Map.get(running_entry, :issue_identifier) || Map.get(running_entry, :identifier)
 
     session_id = Map.get(running_entry, :session_id)
+    extra_message = Enum.map_join(extra_fields, "", fn {key, value} -> " #{key}=#{inspect(value)}" end)
 
     Logger.log(
       log_level_for_stop_reason(reason),
       "worker stop reason=#{inspect(reason)} issue_id=#{inspect(issue_id)} " <>
-        "issue_identifier=#{inspect(issue_identifier)} session_id=#{inspect(session_id)}",
-      issue_id: issue_id,
-      issue_identifier: issue_identifier,
-      session_id: session_id,
-      reason: reason
+        "issue_identifier=#{inspect(issue_identifier)} session_id=#{inspect(session_id)}" <> extra_message,
+      Keyword.merge(
+        [
+          issue_id: issue_id,
+          issue_identifier: issue_identifier,
+          session_id: session_id,
+          reason: reason
+        ],
+        extra_fields
+      )
     )
 
     :ok
@@ -1070,7 +1113,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp complete_issue(%State{} = state, issue_id, running_entry, stop_reason)
        when is_binary(issue_id) and is_map(running_entry) do
     completed_at = DateTime.utc_now() |> DateTime.to_iso8601()
-    record = build_session_record(running_entry, completed_at, stop_reason)
+    record = running_entry |> build_session_record(completed_at, stop_reason) |> Map.put(:issue_id, issue_id)
     prior = Map.get(state.completed, issue_id, [])
     pruned = prune_sessions([record | prior])
 
@@ -1086,6 +1129,7 @@ defmodule SymphonyElixir.Orchestrator do
     %{
       thread_id: Map.get(running_entry, :thread_id),
       attempt: Map.get(running_entry, :retry_attempt, 0),
+      identifier: Map.get(running_entry, :identifier) || Map.get(running_entry, :issue_identifier),
       dispatched_at: Map.get(running_entry, :dispatched_at, completed_at),
       completed_at: completed_at,
       duration_ms: duration_ms_for(running_entry),
@@ -1452,6 +1496,28 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp server_available?(server) when is_atom(server), do: Process.whereis(server)
+  defp server_available?(server) when is_pid(server), do: Process.alive?(server)
+  defp server_available?(_server), do: false
+
+  @spec completed_sessions_for(String.t()) :: [State.session_record()] | :timeout | :unavailable
+  def completed_sessions_for(identifier), do: completed_sessions_for(identifier, __MODULE__, 5_000)
+
+  @spec completed_sessions_for(String.t(), GenServer.server(), timeout()) ::
+          [State.session_record()] | :timeout | :unavailable
+  def completed_sessions_for(identifier, server, timeout \\ 5_000) when is_binary(identifier) do
+    if server_available?(server) do
+      try do
+        GenServer.call(server, {:completed_sessions_for, identifier}, timeout)
+      catch
+        :exit, {:timeout, _} -> :timeout
+        :exit, _ -> :unavailable
+      end
+    else
+      :unavailable
+    end
+  end
+
   @impl true
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
@@ -1507,6 +1573,19 @@ defmodule SymphonyElixir.Orchestrator do
          poll_interval_ms: state.poll_interval_ms
        }
      }, state}
+  end
+
+  def handle_call({:completed_sessions_for, identifier}, _from, %State{} = state)
+      when is_binary(identifier) do
+    sessions =
+      state.completed
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.filter(&(Map.get(&1, :identifier) == identifier))
+      |> Enum.sort_by(&Map.get(&1, :completed_at, ""), :desc)
+      |> Enum.take(max_sessions())
+
+    {:reply, sessions, state}
   end
 
   def handle_call(:request_refresh, _from, state) do

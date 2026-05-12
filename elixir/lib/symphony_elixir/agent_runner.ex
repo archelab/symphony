@@ -87,16 +87,22 @@ defmodule SymphonyElixir.AgentRunner do
       opts_with_thread = Keyword.put(opts, :thread_id, Map.get(session, :thread_id))
 
       try do
-        do_run_codex_turns(
-          session,
-          workspace,
-          issue,
-          codex_update_recipient,
-          opts_with_thread,
-          issue_state_fetcher,
-          1,
-          max_turns
-        )
+        case do_run_codex_turns(
+               session,
+               workspace,
+               issue,
+               codex_update_recipient,
+               opts_with_thread,
+               issue_state_fetcher,
+               1,
+               max_turns
+             ) do
+          {:wrap_up_requested, signal, wrap_issue} ->
+            run_wrap_up_turn(session, workspace, wrap_issue, codex_update_recipient, signal)
+
+          other ->
+            other
+        end
       after
         AppServer.stop_session(session)
       end
@@ -117,42 +123,86 @@ defmodule SymphonyElixir.AgentRunner do
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
-    with {:ok, turn_session} <-
-           AppServer.run_turn(
-             app_session,
-             prompt,
-             issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
-           ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+    case AppServer.run_turn(
+           app_session,
+           prompt,
+           issue,
+           on_message: codex_message_handler(codex_update_recipient, issue)
+         ) do
+      {:ok, turn_session} ->
+        Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+        case continue_with_issue?(issue, issue_state_fetcher) do
+          {:continue, refreshed_issue} when turn_number < max_turns ->
+            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+            do_run_codex_turns(
+              app_session,
+              workspace,
+              refreshed_issue,
+              codex_update_recipient,
+              opts,
+              issue_state_fetcher,
+              turn_number + 1,
+              max_turns
+            )
 
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+          {:continue, refreshed_issue} ->
+            Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
-          :ok
+            :ok
 
-        {:done, _refreshed_issue} ->
-          :ok
+          {:done, _refreshed_issue} ->
+            :ok
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, {:wrap_up_requested, signal}} ->
+        {:wrap_up_requested, signal, issue}
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  defp run_wrap_up_turn(app_session, workspace, issue, codex_update_recipient, signal) do
+    prompt = wrap_up_prompt(signal)
+
+    Logger.info("Starting graceful wrap-up turn for #{issue_context(issue)} reason=#{inspect(signal.reason)} budget_ms=#{signal.budget_ms}")
+
+    case AppServer.run_turn(
+           app_session,
+           prompt,
+           issue,
+           on_message: codex_message_handler(codex_update_recipient, issue)
+         ) do
+      {:ok, turn_session} ->
+        Logger.info("Completed graceful wrap-up turn for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace}")
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Graceful wrap-up turn failed for #{issue_context(issue)}: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp wrap_up_prompt(%{reason: reason, budget_ms: budget_ms}) do
+    """
+    Symphony is terminating this worker.
+
+    Reason: `#{reason}`
+    Budget: #{budget_ms} ms
+
+    Do not start new work. If you have not already done so:
+
+    - For `inactive_state` or `dependencies_reopened`, post a `## Blocker report` comment.
+    - For terminal-state stops, post `## Reviewer notes` only when useful.
+    - Close any open workpad row with the best available stop reason.
+
+    Exit immediately after that final status update.
+    """
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)

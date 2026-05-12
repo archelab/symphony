@@ -158,6 +158,7 @@ defmodule SymphonyElixir.TestSupport do
           max_concurrent_agents: 10,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
+          agent_graceful_termination_budget_ms: 0,
           max_concurrent_agents_by_state: %{},
           # SPEC §11.8.9 (PR4 amendment): the schema default for
           # `agent.workpad.enabled` is `true`. To keep individual tests
@@ -240,6 +241,7 @@ defmodule SymphonyElixir.TestSupport do
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
+    agent_graceful_termination_budget_ms = Keyword.get(config, :agent_graceful_termination_budget_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     agent_workpad_enabled = Keyword.get(config, :agent_workpad_enabled)
     agent_workpad_version = Keyword.get(config, :agent_workpad_version)
@@ -295,6 +297,7 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
+        "  graceful_termination_budget_ms: #{yaml_value(agent_graceful_termination_budget_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         workpad_yaml(
           agent_workpad_enabled,

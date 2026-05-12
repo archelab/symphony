@@ -41,6 +41,11 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:reply, Keyword.fetch!(state, :snapshot), state}
     end
 
+    def handle_call({:completed_sessions_for, identifier}, _from, state) do
+      completed = state |> Keyword.get(:completed, %{}) |> Map.get(identifier, [])
+      {:reply, completed, state}
+    end
+
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
@@ -179,6 +184,21 @@ defmodule SymphonyElixir.ExtensionsTest do
       StaticOrchestrator.start_link(
         name: orchestrator_name,
         snapshot: snapshot,
+        completed: %{
+          "MT-DONE" => [
+            %{
+              issue_id: "issue-done",
+              identifier: "MT-DONE",
+              thread_id: "thread-done",
+              attempt: 3,
+              dispatched_at: "2026-05-12T01:00:00Z",
+              completed_at: "2026-05-12T01:01:02Z",
+              duration_ms: 62_000,
+              model: "gpt-5.4-mini",
+              stop_reason: :agent_exit_normal
+            }
+          ]
+        },
         refresh: %{
           queued: true,
           coalesced: false,
@@ -256,6 +276,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,
+             "completed" => [],
              "logs" => %{"codex_session_logs" => []},
              "recent_events" => [],
              "last_error" => nil,
@@ -266,6 +287,27 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"status" => "retrying", "retry" => %{"attempt" => 2, "error" => "boom"}} =
              json_response(conn, 200)
+
+    conn = get(build_conn(), "/api/v1/MT-DONE")
+
+    assert %{
+             "issue_identifier" => "MT-DONE",
+             "issue_id" => "issue-done",
+             "status" => "completed",
+             "running" => nil,
+             "retry" => nil,
+             "completed" => [
+               %{
+                 "thread_id" => "thread-done",
+                 "attempt" => 3,
+                 "dispatched_at" => "2026-05-12T01:00:00Z",
+                 "completed_at" => "2026-05-12T01:01:02Z",
+                 "duration_ms" => 62_000,
+                 "model" => "gpt-5.4-mini",
+                 "stop_reason" => "agent_exit_normal"
+               }
+             ]
+           } = json_response(conn, 200)
 
     conn = get(build_conn(), "/api/v1/MT-MISSING")
 
