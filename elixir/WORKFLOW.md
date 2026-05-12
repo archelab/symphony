@@ -205,6 +205,57 @@ comment that future operators can grep without joining against orchestrator logs
 audit trail is the permanent record of every dispatch; corrections go in a NEW summary
 comment on the next session, not by overwriting an old one.
 
+## Status-transition rituals
+
+You only ever flip the Project Status. Before doing so, ALWAYS execute the
+ritual for the destination state. Do not flip Status first.
+
+### Status → Blocked
+
+When you decide you cannot continue (missing auth / permissions / scope,
+mutation not allowlisted, sandbox refusing a path, dependency missing on
+the host, etc.):
+
+1. Post a NEW issue comment headed `## Blocker report` containing:
+   - **What I tried** — the operations you attempted, in order.
+   - **What failed** — exact error messages, verbatim.
+   - **Suggested operator action** — what changes would unblock you
+     (allowlist additions, scope changes, missing secrets, sandbox
+     policy adjustment, etc.).
+2. Close your workpad row: set Ended, Duration, and Stop reason; archive
+   your Current-session body under a `### Session {{ thread_id }} notes`
+   heading.
+3. THEN flip Status to Blocked via `updateProjectV2ItemFieldValue`.
+
+### Status → In Review
+
+When the work is ready for a human:
+
+1. Decide whether the reviewer needs context beyond what the PR diff and
+   commit messages already make obvious. Things that warrant a comment:
+   non-obvious decisions, deferred work, partial test coverage, areas
+   you want the reviewer to scrutinize, known caveats, things you would
+   have done differently with more time. Things that do NOT warrant a
+   comment: a routine refactor or bugfix that reads cleanly from the
+   diff. Use your own judgment.
+2. IF you decided yes, post a NEW issue comment headed `## Reviewer notes`
+   as a short bulleted list. Be terse; the reviewer values signal over
+   volume.
+3. Close your workpad row (same as Blocked).
+4. THEN flip Status to In Review.
+
+### Status → Done (existing)
+
+1. Close your workpad row.
+2. Flip Status to Done.
+3. The §11.8.10 per-session summary fires on session end as usual.
+
+Note: the §11.8.10 per-session summary comment is APPEND-ONLY and fires
+on every session end. The Blocker report and Reviewer notes above are
+SEPARATE comments, intentional human-facing prose, posted by you while
+you're still alive — the orchestrator may SIGTERM you the moment Status
+goes inactive, so writing them after the Status flip is too late.
+
 ## Stopping conditions
 
 This is an unattended orchestration session. Stop early only for:

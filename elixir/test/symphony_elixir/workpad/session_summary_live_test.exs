@@ -82,16 +82,18 @@ defmodule SymphonyElixir.Workpad.SessionSummaryLiveTest do
                 }
               }
             }} =
-             GithubGraphqlTool.handle(%{
-               "query" => """
-               mutation($subject: ID!, $body: String!) {
-                 addComment(input: {subjectId: $subject, body: $body}) {
-                   commentEdge { node { id body } }
+             retry_github_submitted_too_quickly(fn ->
+               GithubGraphqlTool.handle(%{
+                 "query" => """
+                 mutation($subject: ID!, $body: String!) {
+                   addComment(input: {subjectId: $subject, body: $body}) {
+                     commentEdge { node { id body } }
+                   }
                  }
-               }
-               """,
-               "variables" => %{"subject" => subject_id, "body" => summary_body}
-             })
+                 """,
+                 "variables" => %{"subject" => subject_id, "body" => summary_body}
+               })
+             end)
 
     assert is_binary(comment_id)
 
@@ -139,17 +141,7 @@ defmodule SymphonyElixir.Workpad.SessionSummaryLiveTest do
     title = "#{title_prefix} #{System.unique_integer([:positive])}"
     body = "Throwaway live test for SPEC §11.8.10 — safe to close."
 
-    {url, 0} =
-      System.cmd("gh", [
-        "issue",
-        "create",
-        "-R",
-        "archelab/symphony",
-        "--title",
-        title,
-        "--body",
-        body
-      ])
+    url = create_issue_with_retry!(title, body)
 
     url = String.trim(url)
     issue_number_str = url |> String.split("/") |> List.last() |> String.trim()
@@ -182,4 +174,51 @@ defmodule SymphonyElixir.Workpad.SessionSummaryLiveTest do
 
     {issue_number, subject_id}
   end
+
+  defp create_issue_with_retry!(title, body, attempts_left \\ 4)
+
+  defp create_issue_with_retry!(title, body, attempts_left) when attempts_left > 1 do
+    case System.cmd(
+           "gh",
+           ["issue", "create", "-R", "archelab/symphony", "--title", title, "--body", body],
+           stderr_to_stdout: true
+         ) do
+      {url, 0} ->
+        String.trim(url)
+
+      {output, _status} ->
+        if String.contains?(output, "submitted too quickly") do
+          Process.sleep(5_000)
+          create_issue_with_retry!(title, body, attempts_left - 1)
+        else
+          flunk("gh issue create failed: #{output}")
+        end
+    end
+  end
+
+  defp create_issue_with_retry!(title, body, _attempts_left) do
+    case System.cmd(
+           "gh",
+           ["issue", "create", "-R", "archelab/symphony", "--title", title, "--body", body],
+           stderr_to_stdout: true
+         ) do
+      {url, 0} -> String.trim(url)
+      {output, _status} -> flunk("gh issue create failed: #{output}")
+    end
+  end
+
+  defp retry_github_submitted_too_quickly(fun, attempts_left \\ 4)
+
+  defp retry_github_submitted_too_quickly(fun, attempts_left) when attempts_left > 1 do
+    case fun.() do
+      {:error, {:github_graphql_errors, [%{"message" => "was submitted too quickly"} | _]}} ->
+        Process.sleep(5_000)
+        retry_github_submitted_too_quickly(fun, attempts_left - 1)
+
+      other ->
+        other
+    end
+  end
+
+  defp retry_github_submitted_too_quickly(fun, _attempts_left), do: fun.()
 end

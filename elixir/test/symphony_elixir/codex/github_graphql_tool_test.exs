@@ -46,6 +46,49 @@ defmodule SymphonyElixir.Codex.GithubGraphqlToolTest do
              })
   end
 
+  test "allows branch and pull request publishing mutations by default" do
+    allowed = ~w(createRef createPullRequest addPullRequestReviewComment)
+    calls = Agent.start_link(fn -> [] end) |> elem(1)
+
+    fake =
+      fn query, _v, _opts ->
+        mutation = Enum.find(allowed, &String.contains?(query, &1))
+        Agent.update(calls, &[mutation | &1])
+        {:ok, %{"data" => %{mutation => %{}}}}
+      end
+
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :github_client) end)
+
+    write_github_workflow_file!(Workflow.workflow_file_path())
+
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { createRef(input:{repositoryId:\"r\", name:\"refs/heads/x\", oid:\"abc\"}) { ref { id } } }",
+               "variables" => %{}
+             })
+
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { createPullRequest(input:{repositoryId:\"r\", baseRefName:\"main\", headRefName:\"x\", title:\"t\", body:\"b\"}) { pullRequest { id } } }",
+               "variables" => %{}
+             })
+
+    assert {:ok, _} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { addPullRequestReviewComment(input:{pullRequestId:\"pr\", body:\"note\", path:\"x\", line:1}) { comment { id } } }",
+               "variables" => %{}
+             })
+
+    assert {:error, {:mutation_not_allowed, "deleteRef"}} =
+             GithubGraphqlTool.handle(%{
+               "query" => "mutation { deleteRef(input:{refId:\"ref\"}) { clientMutationId } }",
+               "variables" => %{}
+             })
+
+    assert MapSet.new(Agent.get(calls, & &1)) == MapSet.new(allowed)
+  end
+
   test "allows updateIssueComment when agent.workpad.enabled (SPEC §11.8.4 / §17.8)" do
     fake =
       fn query, _v, _opts ->

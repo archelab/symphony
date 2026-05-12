@@ -32,8 +32,11 @@ defmodule SymphonyElixir.Codex.GithubGraphqlTool do
     updateProjectV2ItemFieldValue
     addLabelsToLabelable
     removeLabelsFromLabelable
+    createRef
+    createPullRequest
     requestReviews
     addPullRequestReview
+    addPullRequestReviewComment
     resolveReviewThread
   )
 
