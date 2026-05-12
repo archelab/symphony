@@ -128,17 +128,7 @@ defmodule SymphonyElixir.GithubLiveTest do
     body = "Throwaway live test for SPEC §11.8.4 — safe to close/delete."
 
     # 1. Create throwaway issue via gh CLI.
-    {url, 0} =
-      System.cmd("gh", [
-        "issue",
-        "create",
-        "-R",
-        "archelab/symphony",
-        "--title",
-        title,
-        "--body",
-        body
-      ])
+    url = create_issue_with_retry!(title, body)
 
     url = String.trim(url)
     issue_number = url |> String.split("/") |> List.last() |> String.trim()
@@ -184,16 +174,18 @@ defmodule SymphonyElixir.GithubLiveTest do
                 }
               }
             }} =
-             GithubGraphqlTool.handle(%{
-               "query" => """
-               mutation($subject: ID!, $body: String!) {
-                 addComment(input: {subjectId: $subject, body: $body}) {
-                   commentEdge { node { id body } }
+             retry_github_submitted_too_quickly(fn ->
+               GithubGraphqlTool.handle(%{
+                 "query" => """
+                 mutation($subject: ID!, $body: String!) {
+                   addComment(input: {subjectId: $subject, body: $body}) {
+                     commentEdge { node { id body } }
+                   }
                  }
-               }
-               """,
-               "variables" => %{"subject" => subject_id, "body" => add_body}
-             })
+                 """,
+                 "variables" => %{"subject" => subject_id, "body" => add_body}
+               })
+             end)
 
     assert is_binary(comment_id)
     assert returned_body =~ "<!-- symphony-workpad:v1 -->"
@@ -233,4 +225,185 @@ defmodule SymphonyElixir.GithubLiveTest do
                "variables" => %{"id" => comment_id}
              })
   end
+
+  test "github_graphql publishing allowlist round-trip: createRef + createPullRequest" do
+    token = System.get_env("GITHUB_TOKEN")
+    unique = System.unique_integer([:positive])
+    branch = "live-test/github-graphql-publish-#{unique}"
+    test_path = ".github/symphony-live-tests/#{unique}.txt"
+    {:ok, cleanup} = Agent.start(fn -> %{pr_number: nil, ref_id: nil, branch: branch} end)
+
+    on_exit(fn ->
+      %{pr_number: pr_number, ref_id: ref_id, branch: branch} = Agent.get(cleanup, & &1)
+      Agent.stop(cleanup)
+
+      if pr_number do
+        System.cmd("gh", ["pr", "close", "-R", "archelab/symphony", Integer.to_string(pr_number), "--delete-branch"], stderr_to_stdout: true)
+      end
+
+      if ref_id do
+        System.cmd(
+          "gh",
+          [
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation($refId:ID!){ deleteRef(input:{refId:$refId}) { clientMutationId } }",
+            "-F",
+            "refId=#{ref_id}"
+          ],
+          stderr_to_stdout: true
+        )
+      else
+        System.cmd("git", ["push", "https://x-access-token:#{token}@github.com/archelab/symphony.git", ":#{branch}"], stderr_to_stdout: true)
+      end
+    end)
+
+    {:ok,
+     %{
+       "data" => %{
+         "repository" => %{
+           "id" => repo_id,
+           "defaultBranchRef" => %{"target" => %{"oid" => base_oid}}
+         }
+       }
+     }} =
+      GithubGraphqlTool.handle(%{
+        "query" => """
+        query {
+          repository(owner: "archelab", name: "symphony") {
+            id
+            defaultBranchRef { target { oid } }
+          }
+        }
+        """,
+        "variables" => %{}
+      })
+
+    assert {:ok,
+            %{
+              "data" => %{
+                "createRef" => %{
+                  "ref" => %{"id" => ref_id, "name" => ^branch}
+                }
+              }
+            }} =
+             GithubGraphqlTool.handle(%{
+               "query" => """
+               mutation($repositoryId: ID!, $name: String!, $oid: GitObjectID!) {
+                 createRef(input: {repositoryId: $repositoryId, name: $name, oid: $oid}) {
+                   ref { id name }
+                 }
+               }
+               """,
+               "variables" => %{
+                 "repositoryId" => repo_id,
+                 "name" => "refs/heads/#{branch}",
+                 "oid" => base_oid
+               }
+             })
+
+    Agent.update(cleanup, &Map.put(&1, :ref_id, ref_id))
+
+    encoded = Base.encode64("Live github_graphql publishing allowlist test #{unique}\n")
+
+    {_, 0} =
+      System.cmd(
+        "gh",
+        [
+          "api",
+          "-X",
+          "PUT",
+          "repos/archelab/symphony/contents/#{test_path}",
+          "-f",
+          "message=live-test: prepare github_graphql createPullRequest branch",
+          "-f",
+          "content=#{encoded}",
+          "-f",
+          "branch=#{branch}"
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert {:ok,
+            %{
+              "data" => %{
+                "createPullRequest" => %{
+                  "pullRequest" => %{"number" => pr_number, "url" => url}
+                }
+              }
+            }} =
+             retry_github_submitted_too_quickly(fn ->
+               GithubGraphqlTool.handle(%{
+                 "query" => """
+                 mutation($input: CreatePullRequestInput!) {
+                   createPullRequest(input: $input) {
+                     pullRequest { number url }
+                   }
+                 }
+                 """,
+                 "variables" => %{
+                   "input" => %{
+                     "repositoryId" => repo_id,
+                     "baseRefName" => "main",
+                     "headRefName" => branch,
+                     "title" => "[live-test] github_graphql createPullRequest #{unique}",
+                     "body" => "Throwaway live test for the github_graphql publishing allowlist. This PR should be closed automatically."
+                   }
+                 }
+               })
+             end)
+
+    Agent.update(cleanup, &Map.put(&1, :pr_number, pr_number))
+
+    assert is_integer(pr_number)
+    assert url =~ "github.com/archelab/symphony/pull/"
+  end
+
+  defp create_issue_with_retry!(title, body, attempts_left \\ 4)
+
+  defp create_issue_with_retry!(title, body, attempts_left) when attempts_left > 1 do
+    case System.cmd(
+           "gh",
+           ["issue", "create", "-R", "archelab/symphony", "--title", title, "--body", body],
+           stderr_to_stdout: true
+         ) do
+      {url, 0} ->
+        String.trim(url)
+
+      {output, _status} ->
+        if String.contains?(output, "submitted too quickly") do
+          Process.sleep(5_000)
+          create_issue_with_retry!(title, body, attempts_left - 1)
+        else
+          flunk("gh issue create failed: #{output}")
+        end
+    end
+  end
+
+  defp create_issue_with_retry!(title, body, _attempts_left) do
+    case System.cmd(
+           "gh",
+           ["issue", "create", "-R", "archelab/symphony", "--title", title, "--body", body],
+           stderr_to_stdout: true
+         ) do
+      {url, 0} -> String.trim(url)
+      {output, _status} -> flunk("gh issue create failed: #{output}")
+    end
+  end
+
+  defp retry_github_submitted_too_quickly(fun, attempts_left \\ 4)
+
+  defp retry_github_submitted_too_quickly(fun, attempts_left) when attempts_left > 1 do
+    case fun.() do
+      {:error, {:github_graphql_errors, [%{"message" => "was submitted too quickly"} | _]}} ->
+        Process.sleep(5_000)
+        retry_github_submitted_too_quickly(fun, attempts_left - 1)
+
+      other ->
+        other
+    end
+  end
+
+  defp retry_github_submitted_too_quickly(fun, _attempts_left), do: fun.()
 end
