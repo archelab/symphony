@@ -47,6 +47,7 @@ defmodule SymphonyElixirWeb.Presenter do
           :issue_identifier => binary(),
           :last_error => term(),
           :logs => map(),
+          :completed => [map()],
           :recent_events => false | nil | [map()],
           :retry => false | nil | map(),
           :running => false | nil | map(),
@@ -62,11 +63,12 @@ defmodule SymphonyElixirWeb.Presenter do
       %{} = snapshot ->
         running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
         retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
+        completed = completed_sessions(issue_identifier, orchestrator, snapshot_timeout_ms)
 
-        if is_nil(running) and is_nil(retry) do
+        if is_nil(running) and is_nil(retry) and completed == [] do
           {:error, :issue_not_found}
         else
-          {:ok, issue_payload_body(issue_identifier, running, retry)}
+          {:ok, issue_payload_body(issue_identifier, running, retry, completed)}
         end
 
       _ ->
@@ -85,11 +87,11 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp issue_payload_body(issue_identifier, running, retry) do
+  defp issue_payload_body(issue_identifier, running, retry, completed) do
     %{
       issue_identifier: issue_identifier,
-      issue_id: issue_id_from_entries(running, retry),
-      status: issue_status(running, retry),
+      issue_id: issue_id_from_entries(running, retry, completed),
+      status: issue_status(running, retry, completed),
       workspace: %{
         path: workspace_path(issue_identifier, running, retry),
         host: workspace_host(running, retry)
@@ -100,6 +102,7 @@ defmodule SymphonyElixirWeb.Presenter do
       },
       running: running && running_issue_payload(running),
       retry: retry && retry_issue_payload(retry),
+      completed: Enum.map(completed, &completed_session_payload/1),
       logs: %{
         codex_session_logs: []
       },
@@ -109,16 +112,27 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp issue_id_from_entries(running, retry),
-    do: (running && running.issue_id) || (retry && retry.issue_id)
+  defp completed_sessions(issue_identifier, orchestrator, timeout_ms) do
+    case Orchestrator.completed_sessions_for(issue_identifier, orchestrator, timeout_ms) do
+      sessions when is_list(sessions) -> sessions
+      _ -> []
+    end
+  end
+
+  defp issue_id_from_entries(running, retry, completed),
+    do: (running && running.issue_id) || (retry && retry.issue_id) || completed_issue_id(completed)
+
+  defp completed_issue_id([%{issue_id: issue_id} | _]), do: issue_id
+  defp completed_issue_id(_completed), do: nil
 
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
 
-  defp issue_status(_running, nil), do: "running"
-  defp issue_status(nil, _retry), do: "retrying"
-  defp issue_status(_running, _retry), do: "running"
+  defp issue_status(nil, nil, [_ | _]), do: "completed"
+  defp issue_status(_running, nil, _completed), do: "running"
+  defp issue_status(nil, _retry, _completed), do: "retrying"
+  defp issue_status(_running, _retry, _completed), do: "running"
 
   defp running_entry_payload(entry) do
     %{
@@ -182,6 +196,18 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
+  defp completed_session_payload(record) do
+    %{
+      thread_id: Map.get(record, :thread_id),
+      attempt: Map.get(record, :attempt),
+      dispatched_at: Map.get(record, :dispatched_at),
+      completed_at: Map.get(record, :completed_at),
+      duration_ms: Map.get(record, :duration_ms),
+      model: Map.get(record, :model),
+      stop_reason: stringify_atom(Map.get(record, :stop_reason))
+    }
+  end
+
   defp workspace_path(issue_identifier, running, retry) do
     (running && Map.get(running, :workspace_path)) ||
       (retry && Map.get(retry, :workspace_path)) ||
@@ -205,6 +231,9 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp stringify_atom(value) when is_atom(value), do: Atom.to_string(value)
+  defp stringify_atom(value), do: value
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()
