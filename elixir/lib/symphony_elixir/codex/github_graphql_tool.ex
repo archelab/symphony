@@ -74,6 +74,12 @@ defmodule SymphonyElixir.Codex.GithubGraphqlTool do
     end
   end
 
+  @doc false
+  @spec allowed_mutations() :: [String.t()]
+  def allowed_mutations do
+    mutation_allowlist()
+  end
+
   # Spec §18.2.1: malformed mutations MUST return :mutation_unparseable.
   # Multi-mutation documents must gate ALL top-level fields, not just the first.
   defp check_mutation_allowed(query) do

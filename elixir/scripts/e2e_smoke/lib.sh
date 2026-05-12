@@ -87,15 +87,39 @@ e2e::create_test_issue() {
   local title="$1"
   local body="${2:-Smoke test issue. DO NOT act on this issue.}"
 
-  local url
-  url=$(gh issue create -R "$SYMPHONY_E2E_PROJECT_OWNER/$SYMPHONY_E2E_REPO" --title "$title" --body "$body")
-  local num="${url##*/}"
+  local response=""
+  local output
+  local retry_pattern='submitted too quickly|secondary rate|temporarily blocked from content creation|abuse|try again later'
+  local exit_code
+
+  for _attempt in {1..12}; do
+    set +e
+    output=$(gh api "repos/$SYMPHONY_E2E_PROJECT_OWNER/$SYMPHONY_E2E_REPO/issues" \
+      -X POST \
+      -f title="$title" \
+      -f body="$body" 2>&1)
+    exit_code=$?
+    set -e
+
+    if [[ "$exit_code" -eq 0 ]] && jq -e '.number and .node_id' <<<"$output" >/dev/null 2>&1; then
+      response="$output"
+      break
+    fi
+
+    if [[ "$output" =~ $retry_pattern ]] || [[ -z "$output" ]]; then
+      sleep 10
+      continue
+    fi
+
+    e2e::die "gh issue create failed: $output"
+  done
+
+  [[ -n "$response" ]] || e2e::die "gh issue REST create returned no issue after retries"
+
+  local num
+  num=$(jq -r '.number' <<<"$response")
   local node_id
-  node_id=$(gh api graphql -f query="
-    query { repository(owner:\"$SYMPHONY_E2E_PROJECT_OWNER\", name:\"$SYMPHONY_E2E_REPO\") {
-      issue(number: $num) { id }
-    } }
-  " --jq '.data.repository.issue.id')
+  node_id=$(jq -r '.node_id' <<<"$response")
   printf '%s\t%s\n' "$num" "$node_id"
 }
 

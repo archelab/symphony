@@ -39,7 +39,8 @@ active agent for that issue and cleans up matching workspaces.
 2. Provide a GitHub token via the `GITHUB_TOKEN` environment variable. The simplest path is
    `export GITHUB_TOKEN=$(gh auth token)` if you already use the `gh` CLI; otherwise create a
    GitHub Personal Access Token with the `project` and `repo` scopes and export it as
-   `GITHUB_TOKEN`.
+   `GITHUB_TOKEN`. Spawned Codex sessions also receive this token as `GH_TOKEN`
+   so `gh issue view` and `gh pr view` use the same credential as GraphQL.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `github` skills to your repo.
    - The `github` skill expects Symphony's `github_graphql` app-server tool for raw GitHub
@@ -153,6 +154,14 @@ Notes:
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_token` resolves `$GITHUB_TOKEN` by default when unset or when the value is the
   literal `$GITHUB_TOKEN`. Other `$VAR` env-backed tokens are also resolved.
+- At boot, Symphony verifies GitHub auth with `viewer { login }`, warns when
+  publishing mutations are missing from the allowlist, and warns when
+  `approval_policy: never` is paired with a non-writable thread sandbox.
+- The spawned Codex app-server receives the resolved tracker token as both
+  `GH_TOKEN` and `GITHUB_TOKEN`. Agent shell commands should use the prepared
+  environment directly and should not source `~/.zshrc`.
+- GitHub-backed workflows that expect agents to run `gh` must set
+  `codex.turn_sandbox_policy.networkAccess: true`; the shipped workflow does.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the

@@ -201,6 +201,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :stderr_to_stdout,
             args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
             cd: String.to_charlist(workspace),
+            env: codex_env(),
             line: @port_line_bytes
           ]
         )
@@ -220,6 +221,19 @@ defmodule SymphonyElixir.Codex.AppServer do
       "exec #{Config.settings!().codex.command}"
     ]
     |> Enum.join(" && ")
+  end
+
+  defp codex_env do
+    case Config.settings!().tracker.api_token do
+      token when is_binary(token) and token != "" ->
+        [
+          {~c"GH_TOKEN", String.to_charlist(token)},
+          {~c"GITHUB_TOKEN", String.to_charlist(token)}
+        ]
+
+      _ ->
+        []
+    end
   end
 
   defp port_metadata(port, worker_host) when is_port(port) do
