@@ -50,6 +50,7 @@ codex:
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
+    networkAccess: true
 ---
 
 You are working on GitHub item `{{ issue.identifier }}` in project Symphony.
@@ -81,7 +82,9 @@ No description provided.
 
 ## Tools available
 
-- `gh` CLI is on PATH and authenticated via `$GITHUB_TOKEN`.{% if issue.repository %} The default repo is **{{ issue.repository.name_with_owner }}**.{% endif %}
+- `gh` CLI is on PATH and authenticated via `$GH_TOKEN` and `$GITHUB_TOKEN`.{% if issue.repository %} The default repo is **{{ issue.repository.name_with_owner }}**.{% endif %}
+- Run shell commands directly from this prepared environment; do not prefix
+  commands with `source ~/.zshrc`.
 - The `github_graphql` tool is registered in this Codex session for tracker
   reads/writes that need raw GraphQL.
 

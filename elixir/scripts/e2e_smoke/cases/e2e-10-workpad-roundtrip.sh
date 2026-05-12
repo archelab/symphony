@@ -319,6 +319,7 @@ FIRST_ROLL_MTIME=0
 if [[ -n "$FIRST_ROLL" ]]; then
   FIRST_ROLL_MTIME=$(stat -f '%m' "$FIRST_ROLL" 2>/dev/null || stat -c '%Y' "$FIRST_ROLL" 2>/dev/null || echo 0)
 fi
+CURRENT_CODEX_THREAD_ID="${CODEX_THREAD_ID:-}"
 
 while (( $(date +%s) < SECOND_DISPATCH_DEADLINE )); do
   # Channel 1: scan symphony.log for a new thread_id on this issue.
@@ -334,14 +335,24 @@ while (( $(date +%s) < SECOND_DISPATCH_DEADLINE )); do
   fi
 
   # Channel 2: any rollout newer than the first one signals a second
-  # codex session started. Take the newest rollout that isn't FIRST_ROLL.
+  # codex session started. Take the newest rollout that isn't FIRST_ROLL,
+  # isn't the harness operator's own Codex thread, and mentions this smoke
+  # issue. The extra filters avoid false positives when the operator running
+  # the smoke test is also a Codex session writing rollout JSONL files.
   while IFS= read -r -d '' candidate; do
     cand_mtime=$(stat -f '%m' "$candidate" 2>/dev/null || stat -c '%Y' "$candidate" 2>/dev/null || echo 0)
     if (( cand_mtime > FIRST_ROLL_MTIME )) && [[ "$candidate" != "$FIRST_ROLL" ]]; then
-      SECOND_ROLL="$candidate"
       # Extract thread_id from filename: rollout-<ts>-<thread_id>.jsonl
-      SECOND_THREAD_ID=$(basename "$candidate" \
+      candidate_thread=$(basename "$candidate" \
         | sed -E 's/^rollout-[0-9T:-]+-([a-f0-9-]+)\.jsonl$/\1/')
+      if [[ -n "$CURRENT_CODEX_THREAD_ID" && "$candidate_thread" == "$CURRENT_CODEX_THREAD_ID" ]]; then
+        continue
+      fi
+      if ! grep -aqE "($SYMPHONY_E2E_PROJECT_OWNER/$SYMPHONY_E2E_REPO#$ISSUE_NUM|/issues/$ISSUE_NUM|E2E-10 workpad roundtrip)" "$candidate"; then
+        continue
+      fi
+      SECOND_ROLL="$candidate"
+      SECOND_THREAD_ID="$candidate_thread"
       break
     fi
   done < <(find "$HOME/.codex/sessions" -type f -name "rollout-*.jsonl" -print0 2>/dev/null)

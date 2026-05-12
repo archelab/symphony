@@ -6,9 +6,11 @@ defmodule SymphonyElixir.GithubLiveTest do
   """
   use SymphonyElixir.TestSupport
   @moduletag :live_github
+  @moduletag timeout: :timer.minutes(10)
 
   alias SymphonyElixir.Codex.GithubGraphqlTool
   alias SymphonyElixir.Github.{Adapter, Issue}
+  alias SymphonyElixir.PreflightChecks
 
   setup do
     # Module is tagged :live_github and excluded by `mix test_strict`. When
@@ -100,6 +102,10 @@ defmodule SymphonyElixir.GithubLiveTest do
     assert is_binary(login)
   end
 
+  test "preflight GitHub auth check accepts the real tracker token" do
+    assert :ok = PreflightChecks.run()
+  end
+
   test "github_graphql workpad allowlist round-trip: addComment + updateIssueComment (SPEC §11.8.4)" do
     # Live workpad-allowlist proof. Creates a throwaway issue via the `gh`
     # CLI (createIssue is intentionally NOT on the allowlist), then exercises
@@ -127,7 +133,8 @@ defmodule SymphonyElixir.GithubLiveTest do
     title = "[workpad-live-test] addComment + updateIssueComment round-trip #{System.unique_integer([:positive])}"
     body = "Throwaway live test for SPEC §11.8.4 — safe to close/delete."
 
-    # 1. Create throwaway issue via gh CLI.
+    # 1. Create throwaway issue via gh REST. `gh issue create` can swallow
+    #    secondary-rate-limit 403s as an empty successful output on gh 2.92.
     url = create_issue_with_retry!(title, body)
 
     url = String.trim(url)
@@ -360,20 +367,26 @@ defmodule SymphonyElixir.GithubLiveTest do
     assert url =~ "github.com/archelab/symphony/pull/"
   end
 
-  defp create_issue_with_retry!(title, body, attempts_left \\ 4)
+  defp create_issue_with_retry!(title, body, attempts_left \\ 18)
 
   defp create_issue_with_retry!(title, body, attempts_left) when attempts_left > 1 do
     case System.cmd(
            "gh",
-           ["issue", "create", "-R", "archelab/symphony", "--title", title, "--body", body],
+           ["api", "repos/archelab/symphony/issues", "-X", "POST", "-f", "title=#{title}", "-f", "body=#{body}"],
            stderr_to_stdout: true
          ) do
-      {url, 0} ->
-        String.trim(url)
+      {json, 0} ->
+        url = issue_url_from_rest_response(json)
+
+        if valid_issue_url?(url) do
+          url
+        else
+          retry_create_issue_or_flunk!(title, body, json, attempts_left)
+        end
 
       {output, _status} ->
-        if String.contains?(output, "submitted too quickly") do
-          Process.sleep(5_000)
+        if github_submitted_too_quickly?(output) do
+          Process.sleep(15_000)
           create_issue_with_retry!(title, body, attempts_left - 1)
         else
           flunk("gh issue create failed: #{output}")
@@ -384,21 +397,48 @@ defmodule SymphonyElixir.GithubLiveTest do
   defp create_issue_with_retry!(title, body, _attempts_left) do
     case System.cmd(
            "gh",
-           ["issue", "create", "-R", "archelab/symphony", "--title", title, "--body", body],
+           ["api", "repos/archelab/symphony/issues", "-X", "POST", "-f", "title=#{title}", "-f", "body=#{body}"],
            stderr_to_stdout: true
          ) do
-      {url, 0} -> String.trim(url)
-      {output, _status} -> flunk("gh issue create failed: #{output}")
+      {json, 0} ->
+        url = issue_url_from_rest_response(json)
+
+        if valid_issue_url?(url),
+          do: url,
+          else: flunk("gh issue REST create returned no issue URL: #{inspect(json)}")
+
+      {output, _status} ->
+        flunk("gh issue REST create failed: #{output}")
     end
   end
 
-  defp retry_github_submitted_too_quickly(fun, attempts_left \\ 4)
+  defp retry_create_issue_or_flunk!(title, body, output, attempts_left) do
+    if github_submitted_too_quickly?(output) do
+      Process.sleep(15_000)
+      create_issue_with_retry!(title, body, attempts_left - 1)
+    else
+      flunk("gh issue REST create returned no issue URL: #{inspect(output)}")
+    end
+  end
+
+  defp issue_url_from_rest_response(json) do
+    case Jason.decode(json) do
+      {:ok, %{"html_url" => url}} when is_binary(url) -> String.trim(url)
+      _ -> ""
+    end
+  end
+
+  defp retry_github_submitted_too_quickly(fun, attempts_left \\ 18)
 
   defp retry_github_submitted_too_quickly(fun, attempts_left) when attempts_left > 1 do
     case fun.() do
-      {:error, {:github_graphql_errors, [%{"message" => "was submitted too quickly"} | _]}} ->
-        Process.sleep(5_000)
-        retry_github_submitted_too_quickly(fun, attempts_left - 1)
+      {:error, {:github_graphql_errors, errors}} when is_list(errors) ->
+        if github_submitted_too_quickly?(errors) do
+          Process.sleep(15_000)
+          retry_github_submitted_too_quickly(fun, attempts_left - 1)
+        else
+          {:error, {:github_graphql_errors, errors}}
+        end
 
       other ->
         other
@@ -406,4 +446,22 @@ defmodule SymphonyElixir.GithubLiveTest do
   end
 
   defp retry_github_submitted_too_quickly(fun, _attempts_left), do: fun.()
+
+  defp valid_issue_url?(url), do: String.match?(url, ~r{/issues/\d+$})
+
+  defp github_submitted_too_quickly?(output) when is_binary(output),
+    do:
+      String.contains?(output, "submitted too quickly") or
+        String.contains?(output, "secondary rate limit") or
+        String.contains?(output, "temporarily blocked from content creation") or
+        String.contains?(output, "abuse")
+
+  defp github_submitted_too_quickly?(errors) when is_list(errors) do
+    Enum.any?(errors, fn
+      %{"message" => message} when is_binary(message) -> github_submitted_too_quickly?(message)
+      _ -> false
+    end)
+  end
+
+  defp github_submitted_too_quickly?(_), do: false
 end

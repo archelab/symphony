@@ -1,6 +1,76 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  test "app server exposes tracker token as GH_TOKEN and GITHUB_TOKEN to spawned Codex" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-gh-token-env-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-812")
+      codex_binary = Path.join(test_root, "fake-codex")
+      env_file = Path.join(test_root, "codex-env.trace")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      printf 'GH_TOKEN=%s\\n' "$GH_TOKEN" > "#{env_file}"
+      printf 'GITHUB_TOKEN=%s\\n' "$GITHUB_TOKEN" >> "#{env_file}"
+
+      count=0
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-812"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-812"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_api_token: "ghp_spawned_token",
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-gh-token-env",
+        identifier: "MT-812",
+        title: "Validate gh auth env",
+        description: "Ensure spawned app-server receives gh-compatible token env",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-812",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Check auth env", issue)
+
+      assert File.read!(env_file) == "GH_TOKEN=ghp_spawned_token\nGITHUB_TOKEN=ghp_spawned_token\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
