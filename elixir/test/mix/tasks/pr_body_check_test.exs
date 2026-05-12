@@ -61,13 +61,19 @@ defmodule Mix.Tasks.PrBody.CheckTest do
 
   test "fails on invalid options" do
     assert_raise Mix.Error, ~r/Invalid option/, fn ->
-      Check.run(["lint", "--wat"])
+      Check.run(["--wat"])
+    end
+  end
+
+  test "fails on unexpected positional arguments" do
+    assert_raise Mix.Error, ~r/Unexpected argument\(s\): lint/, fn ->
+      Check.run(["lint", "--file", "body.md"])
     end
   end
 
   test "fails when file option is missing" do
     assert_raise Mix.Error, ~r/Missing required option --file/, fn ->
-      Check.run(["lint"])
+      Check.run([])
     end
   end
 
@@ -76,7 +82,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       File.write!("body.md", @valid_body)
 
       assert_raise Mix.Error, ~r/Unable to read PR template/, fn ->
-        Check.run(["lint", "--file", "body.md"])
+        Check.run(["--file", "body.md"])
       end
     end)
   end
@@ -87,7 +93,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       File.write!("body.md", @valid_body)
 
       assert_raise Mix.Error, ~r/No markdown headings found/, fn ->
-        Check.run(["lint", "--file", "body.md"])
+        Check.run(["--file", "body.md"])
       end
     end)
   end
@@ -97,7 +103,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       write_template!(@template)
 
       assert_raise Mix.Error, ~r/Unable to read missing\.md/, fn ->
-        Check.run(["lint", "--file", "missing.md"])
+        Check.run(["--file", "missing.md"])
       end
     end)
   end
@@ -110,7 +116,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       error_output =
         capture_io(:stderr, fn ->
           assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
-            Check.run(["lint", "--file", "body.md"])
+            Check.run(["--file", "body.md"])
           end
         end)
 
@@ -128,7 +134,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       error_output =
         capture_io(:stderr, fn ->
           assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
-            Check.run(["lint", "--file", "body.md"])
+            Check.run(["--file", "body.md"])
           end
         end)
 
@@ -167,7 +173,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       error_output =
         capture_io(:stderr, fn ->
           assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
-            Check.run(["lint", "--file", "body.md"])
+            Check.run(["--file", "body.md"])
           end
         end)
 
@@ -185,7 +191,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       error_output =
         capture_io(:stderr, fn ->
           assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
-            Check.run(["lint", "--file", "body.md"])
+            Check.run(["--file", "body.md"])
           end
         end)
 
@@ -223,7 +229,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       error_output =
         capture_io(:stderr, fn ->
           assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
-            Check.run(["lint", "--file", "body.md"])
+            Check.run(["--file", "body.md"])
           end
         end)
 
@@ -262,7 +268,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       error_output =
         capture_io(:stderr, fn ->
           assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
-            Check.run(["lint", "--file", "body.md"])
+            Check.run(["--file", "body.md"])
           end
         end)
 
@@ -280,7 +286,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
 
       capture_io(:stderr, fn ->
         assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
-          Check.run(["lint", "--file", "body.md"])
+          Check.run(["--file", "body.md"])
         end
       end)
     end)
@@ -294,7 +300,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       error_output =
         capture_io(:stderr, fn ->
           assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
-            Check.run(["lint", "--file", "body.md"])
+            Check.run(["--file", "body.md"])
           end
         end)
 
@@ -309,7 +315,7 @@ defmodule Mix.Tasks.PrBody.CheckTest do
 
       output =
         capture_io(fn ->
-          Check.run(["lint", "--file", "body.md"])
+          Check.run(["--file", "body.md"])
         end)
 
       assert output =~ "PR body format OK"
