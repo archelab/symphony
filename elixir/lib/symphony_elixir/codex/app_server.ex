@@ -12,6 +12,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   @turn_interrupt_id 4
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
+  @max_heartbeat_interval_ms 60_000
+  @min_heartbeat_interval_ms 100
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
 
   @type session :: %{
@@ -378,6 +380,8 @@ defmodule SymphonyElixir.Codex.AppServer do
       thread_id: thread_id,
       turn_id: turn_id,
       timeout_ms: Config.settings!().codex.turn_timeout_ms,
+      deadline_ms: System.monotonic_time(:millisecond) + Config.settings!().codex.turn_timeout_ms,
+      heartbeat_interval_ms: heartbeat_interval_ms(),
       tool_executor: tool_executor,
       auto_approve_requests: auto_approve_requests
     }
@@ -386,6 +390,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp receive_loop(port, loop, on_message, pending_line) do
+    remaining_timeout_ms = remaining_timeout_ms(loop.deadline_ms)
+
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
@@ -402,9 +408,46 @@ defmodule SymphonyElixir.Codex.AppServer do
         interrupt_turn(port, loop.thread_id, loop.turn_id)
         {:error, {:wrap_up_requested, signal}}
     after
-      loop.timeout_ms ->
-        {:error, :turn_timeout}
+      min(remaining_timeout_ms, loop.heartbeat_interval_ms) ->
+        if remaining_timeout_ms(loop.deadline_ms) <= 0 do
+          {:error, :turn_timeout}
+        else
+          emit_heartbeat(port, loop, on_message)
+          receive_loop(port, loop, on_message, pending_line)
+        end
     end
+  end
+
+  defp heartbeat_interval_ms do
+    stall_timeout_ms = Config.settings!().codex.stall_timeout_ms
+
+    if stall_timeout_ms > 0 do
+      stall_timeout_ms
+      |> div(2)
+      |> max(@min_heartbeat_interval_ms)
+      |> min(@max_heartbeat_interval_ms)
+    else
+      @max_heartbeat_interval_ms
+    end
+  end
+
+  defp remaining_timeout_ms(deadline_ms) do
+    max(0, deadline_ms - System.monotonic_time(:millisecond))
+  end
+
+  defp emit_heartbeat(port, loop, on_message) do
+    emit_message(
+      on_message,
+      :heartbeat,
+      %{
+        payload: %{
+          thread_id: loop.thread_id,
+          turn_id: loop.turn_id,
+          reason: :turn_waiting
+        }
+      },
+      metadata_from_message(port, %{})
+    )
   end
 
   defp interrupt_turn(port, thread_id, turn_id) do
