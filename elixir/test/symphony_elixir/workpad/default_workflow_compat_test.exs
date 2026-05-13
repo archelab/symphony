@@ -46,6 +46,15 @@ defmodule SymphonyElixir.Workpad.DefaultWorkflowCompatTest do
     assert body =~ ~r/^\s*model:\s*"[^"]+"/m
   end
 
+  test "default WORKFLOW.md tells agents to claim work and keep dependency gating active" do
+    body = File.read!(@default_workflow)
+
+    assert body =~ ~s(dependency_gating_states: ["Agent Ready", "In Progress"])
+    assert body =~ "### Status → In Progress"
+    assert body =~ "claim the item before code"
+    assert body =~ "updateProjectV2ItemFieldValue"
+  end
+
   test "default WORKFLOW.md loads successfully under §11.8.9 template validation" do
     # `Workflow.load/1` runs `validate_workpad_template/1` against the parsed
     # front matter + prompt body. The stock template must satisfy it without

@@ -10,7 +10,7 @@ tracker:
   include_kinds: [issue, pull_request]
   active_states: ["Agent Ready", "In Progress", "Rework"]
   terminal_states: ["Done"]
-  dependency_gating_states: ["Agent Ready"]
+  dependency_gating_states: ["Agent Ready", "In Progress"]
   cross_repo_blockers: false
 polling:
   interval_ms: 30000
@@ -227,6 +227,21 @@ the workpad is unwritable.
 
 You only ever flip the Project Status. Before doing so, ALWAYS execute the
 ritual for the destination state. Do not flip Status first.
+
+### Status → In Progress
+
+When the current Project Status is `Agent Ready`, claim the item before code
+work so the board shows that someone is actively working:
+
+1. Read feedback/context first using the "Reading feedback" section above.
+2. Find or create the workpad and append/update your current session row.
+3. THEN flip Status to `In Progress` via `updateProjectV2ItemFieldValue`.
+
+If the status update fails because of GitHub auth, rate limits, or GraphQL
+allowlist constraints, record the failure in the workpad and continue only if
+you can still safely perform the requested task. Do not move blocked dependent
+items forward just to claim them; dependency gating still applies in both
+`Agent Ready` and `In Progress`.
 
 ### Status → Blocked
 
