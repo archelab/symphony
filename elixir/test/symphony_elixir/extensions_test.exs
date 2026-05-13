@@ -46,6 +46,16 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:reply, completed, state}
     end
 
+    def handle_call(:completed_sessions, _from, state) do
+      completed =
+        state
+        |> Keyword.get(:completed, %{})
+        |> Map.values()
+        |> List.flatten()
+
+      {:reply, completed, state}
+    end
+
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
@@ -214,7 +224,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1},
+             "counts" => %{"running" => 1, "retrying" => 1, "completed" => 1},
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -242,6 +252,20 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "workspace_path" => nil
                }
              ],
+             "completed" => [
+               %{
+                 "issue_id" => "issue-done",
+                 "issue_identifier" => "MT-DONE",
+                 "thread_id" => "thread-done",
+                 "attempt" => 3,
+                 "dispatched_at" => "2026-05-12T01:00:00Z",
+                 "completed_at" => "2026-05-12T01:01:02Z",
+                 "duration_ms" => 62_000,
+                 "model" => "gpt-5.4-mini",
+                 "tokens" => %{"input_tokens" => 0, "output_tokens" => 0, "total_tokens" => 0},
+                 "stop_reason" => "agent_exit_normal"
+               }
+             ],
              "codex_totals" => %{
                "input_tokens" => 4,
                "output_tokens" => 8,
@@ -258,6 +282,22 @@ defmodule SymphonyElixir.ExtensionsTest do
              "issue_identifier" => "MT-HTTP",
              "issue_id" => "issue-http",
              "status" => "running",
+             "issue" => %{
+               "branch_name" => nil,
+               "content_id" => nil,
+               "kind" => nil,
+               "number" => nil,
+               "pr" => nil,
+               "repository" => nil,
+               "state" => "In Progress",
+               "title" => nil
+             },
+             "links" => %{
+               "api" => "/api/v1/MT-HTTP",
+               "github" => nil,
+               "github_kind" => "issue",
+               "github_label" => "GitHub issue"
+             },
              "workspace" => %{
                "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
                "host" => nil
@@ -277,8 +317,35 @@ defmodule SymphonyElixir.ExtensionsTest do
              },
              "retry" => nil,
              "completed" => [],
+             "session" => %{
+               "session_id" => "thread-http",
+               "thread_id" => nil,
+               "model" => nil,
+               "started_at" => issue_payload["session"]["started_at"],
+               "dispatched_at" => nil,
+               "completed_at" => nil,
+               "stop_reason" => nil,
+               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+             },
+             "workpad" => %{
+               "prior_sessions" => 0,
+               "current_attempt" => 0,
+               "latest_dispatched_at" => nil,
+               "latest_thread_id" => nil
+             },
              "logs" => %{"codex_session_logs" => []},
              "recent_events" => [],
+             "timeline" => [
+               %{
+                 "at" => issue_payload["timeline"] |> List.first() |> Map.fetch!("at"),
+                 "event" => "agent_started",
+                 "message" => "Agent process started"
+               }
+             ],
+             "timeline_gap" => %{
+               "current_projection" => "Runtime state retains dispatch, process start, latest Codex event, retry schedule, and completion records.",
+               "next_persistence_step" => "Persist per-session event rows from Codex updates and orchestrator transitions, then project them by issue/session in timestamp order."
+             },
              "last_error" => nil,
              "tracked" => %{}
            }
@@ -304,6 +371,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "completed_at" => "2026-05-12T01:01:02Z",
                  "duration_ms" => 62_000,
                  "model" => "gpt-5.4-mini",
+                 "tokens" => %{"input_tokens" => 0, "output_tokens" => 0, "total_tokens" => 0},
                  "stop_reason" => "agent_exit_normal"
                }
              ]
@@ -441,6 +509,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
+    assert html =~ "Completed sessions"
+    assert html =~ "Issue details"
+    assert html =~ "Raw JSON"
     assert html =~ "Codex update"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
@@ -490,6 +561,50 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  test "dashboard liveview renders completed sessions without running sessions" do
+    orchestrator_name = Module.concat(__MODULE__, :CompletedOnlyDashboardOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: %{
+          running: [],
+          retrying: [],
+          codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+          rate_limits: nil
+        },
+        completed: %{
+          "MT-DONE" => [
+            %{
+              issue_id: "issue-done",
+              identifier: "MT-DONE",
+              thread_id: "thread-done",
+              attempt: 3,
+              dispatched_at: "2026-05-12T01:00:00Z",
+              completed_at: "2026-05-12T01:01:02Z",
+              duration_ms: 62_000,
+              model: "gpt-5.4-mini",
+              codex_input_tokens: 11,
+              codex_output_tokens: 13,
+              codex_total_tokens: 24,
+              stop_reason: :agent_exit_normal
+            }
+          ]
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ "Completed sessions"
+    assert html =~ "MT-DONE"
+    assert html =~ "gpt-5.4-mini"
+    assert html =~ "agent_exit_normal"
+    assert html =~ "24"
+    assert html =~ "Issue details"
+  end
+
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
@@ -499,6 +614,121 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
+  end
+
+  test "issue detail liveview renders session metadata, timeline, and completed attempts" do
+    orchestrator_name = Module.concat(__MODULE__, :IssueDetailOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        completed: %{
+          "archelab/symphony#125" => [
+            %{
+              issue_id: "issue-done",
+              identifier: "archelab/symphony#125",
+              thread_id: "thread-done",
+              attempt: 3,
+              dispatched_at: "2026-05-12T01:00:00Z",
+              completed_at: "2026-05-12T01:01:02Z",
+              duration_ms: 62_000,
+              model: "gpt-5.4-mini",
+              codex_input_tokens: 11,
+              codex_output_tokens: 13,
+              codex_total_tokens: 24,
+              stop_reason: :agent_exit_normal
+            }
+          ]
+        }
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, view, html} = live(build_conn(), "/issues?issue=archelab%2Fsymphony%23125")
+
+    assert html =~ "Issue drilldown"
+    assert html =~ "archelab/symphony#125"
+    assert html =~ "Workspace path"
+    assert html =~ "thread-done"
+    assert html =~ "gpt-5.4-mini"
+    assert html =~ "agent_exit_normal"
+    assert html =~ "Event timeline"
+    assert html =~ "per-session event rows"
+    assert html =~ "Attempt history"
+    assert html =~ "GitHub issue"
+    assert html =~ "Raw JSON"
+
+    :sys.replace_state(pid_for(orchestrator_name), fn state ->
+      updated_completed =
+        put_in(
+          Keyword.fetch!(state, :completed)["archelab/symphony#125"],
+          [
+            %{
+              issue_id: "issue-done",
+              identifier: "archelab/symphony#125",
+              thread_id: "thread-done",
+              attempt: 4,
+              dispatched_at: "2026-05-12T02:00:00Z",
+              completed_at: "2026-05-12T02:01:02Z",
+              duration_ms: nil,
+              model: "",
+              codex_input_tokens: 0,
+              codex_output_tokens: 0,
+              codex_total_tokens: 0,
+              stop_reason: :crashed
+            }
+          ]
+        )
+
+      Keyword.put(state, :completed, updated_completed)
+    end)
+
+    StatusDashboard.notify_update()
+
+    assert_eventually(fn ->
+      updated_html = render(view)
+      updated_html =~ "crashed" and updated_html =~ "n/a"
+    end)
+  end
+
+  test "issue detail liveview renders missing issue and missing identifier states" do
+    orchestrator_name = Module.concat(__MODULE__, :IssueDetailMissingOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, missing_identifier_html} = live(build_conn(), "/issues")
+    assert missing_identifier_html =~ "issue_required"
+    assert missing_identifier_html =~ "Issue identifier required"
+
+    {:ok, _view, missing_issue_html} = live(build_conn(), "/issues?issue=MT-MISSING")
+    assert missing_issue_html =~ "issue_not_found"
+    assert missing_issue_html =~ "Issue not found"
+  end
+
+  test "issue detail liveview renders retained recent Codex events" do
+    orchestrator_name = Module.concat(__MODULE__, :IssueDetailEventOrchestrator)
+    snapshot = static_snapshot_with_event()
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/issues/MT-HTTP")
+
+    assert html =~ "Recent Codex events"
+    assert html =~ "agent message content streaming"
+    assert html =~ "structured update"
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
@@ -535,7 +765,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1}
+    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "completed" => 0}
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
@@ -608,6 +838,39 @@ defmodule SymphonyElixir.ExtensionsTest do
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       rate_limits: %{"primary" => %{"remaining" => 11}}
     }
+  end
+
+  defp static_snapshot_with_event do
+    put_in(static_snapshot().running, [
+      %{
+        issue_id: "issue-http",
+        identifier: "MT-HTTP",
+        state: "In Progress",
+        session_id: "",
+        turn_count: 8,
+        last_codex_event: :notification,
+        last_codex_message: %{
+          event: :notification,
+          message: %{
+            payload: %{
+              "method" => "codex/event/agent_message_content_delta",
+              "params" => %{"msg" => %{"content" => "structured update"}}
+            }
+          }
+        },
+        last_codex_timestamp: DateTime.utc_now(),
+        codex_input_tokens: 10,
+        codex_output_tokens: 12,
+        codex_total_tokens: 22,
+        started_at: DateTime.utc_now()
+      }
+    ])
+  end
+
+  defp pid_for(name) do
+    name
+    |> Process.whereis()
+    |> tap(&assert is_pid(&1))
   end
 
   defp wait_for_bound_port do
