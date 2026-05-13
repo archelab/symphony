@@ -222,9 +222,30 @@ e2e::start_orchestrator() {
 
 # Stop the orchestrator.
 e2e::stop_orchestrator() {
-  pkill -9 -f 'beam.smp.*mix run' 2>/dev/null || true
+  local pid_file="$E2E_LOG_DIR/orch.pid"
+  local pid=""
+
+  if [[ -f "$pid_file" ]]; then
+    pid="$(tr -cd '0-9' <"$pid_file")"
+  fi
+
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill -TERM "$pid" 2>/dev/null || true
+
+    for _ in {1..20}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+
+    if kill -0 "$pid" 2>/dev/null; then
+      pkill -KILL -P "$pid" 2>/dev/null || true
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+
   sleep 1
-  rm -f "$E2E_LOG_DIR/orch.pid"
+  rm -f "$pid_file"
 }
 
 # Wait for a regex to appear in a file. Args: file regex timeout_s

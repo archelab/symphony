@@ -193,21 +193,23 @@ defmodule SymphonyElixir.Codex.AppServer do
     if is_nil(executable) do
       {:error, :bash_not_found}
     else
-      port =
-        Port.open(
-          {:spawn_executable, String.to_charlist(executable)},
-          [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
-            cd: String.to_charlist(workspace),
-            env: codex_env(),
-            line: @port_line_bytes
-          ]
-        )
+      with {:ok, env} <- codex_env(workspace) do
+        port =
+          Port.open(
+            {:spawn_executable, String.to_charlist(executable)},
+            [
+              :binary,
+              :exit_status,
+              :stderr_to_stdout,
+              args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
+              cd: String.to_charlist(workspace),
+              env: env,
+              line: @port_line_bytes
+            ]
+          )
 
-      {:ok, port}
+        {:ok, port}
+      end
     end
   end
 
@@ -224,16 +226,46 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> Enum.join(" && ")
   end
 
-  defp codex_env do
-    case Config.settings!().tracker.api_token do
-      token when is_binary(token) and token != "" ->
-        [
-          {~c"GH_TOKEN", String.to_charlist(token)},
-          {~c"GITHUB_TOKEN", String.to_charlist(token)}
-        ]
+  defp codex_env(workspace) do
+    with {:ok, browser_env} <- workspace_browser_env(workspace) do
+      token_env =
+        case Config.settings!().tracker.api_token do
+          token when is_binary(token) and token != "" ->
+            [
+              {~c"GH_TOKEN", String.to_charlist(token)},
+              {~c"GITHUB_TOKEN", String.to_charlist(token)}
+            ]
 
-      _ ->
-        []
+          _ ->
+            []
+        end
+
+      {:ok, token_env ++ browser_env}
+    end
+  end
+
+  defp workspace_browser_env(workspace) do
+    browser_home = Path.join(workspace, ".agent-browser")
+    runtime_dir = Path.join(workspace, ".runtime")
+
+    with :ok <- prepare_runtime_dir(browser_home),
+         :ok <- prepare_runtime_dir(runtime_dir) do
+      {:ok,
+       [
+         {~c"AGENT_BROWSER_HOME", String.to_charlist(browser_home)},
+         {~c"XDG_RUNTIME_DIR", String.to_charlist(runtime_dir)},
+         {~c"AGENT_BROWSER_IDLE_TIMEOUT_MS", ~c"60000"},
+         {~c"AGENT_BROWSER_CONTENT_BOUNDARIES", ~c"1"}
+       ]}
+    end
+  end
+
+  defp prepare_runtime_dir(path) when is_binary(path) do
+    with :ok <- File.mkdir_p(path),
+         :ok <- File.chmod(path, 0o700) do
+      :ok
+    else
+      {:error, reason} -> {:error, {:browser_runtime_dir_unavailable, path, reason}}
     end
   end
 

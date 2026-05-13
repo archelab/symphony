@@ -160,6 +160,11 @@ Notes:
 - The spawned Codex app-server receives the resolved tracker token as both
   `GH_TOKEN` and `GITHUB_TOKEN`. Agent shell commands should use the prepared
   environment directly and should not source `~/.zshrc`.
+- Local Codex app-server sessions also receive browser runtime paths rooted in
+  the issue workspace: `AGENT_BROWSER_HOME=<workspace>/.agent-browser` and
+  `XDG_RUNTIME_DIR=<workspace>/.runtime`. This keeps `$agent-browser` state
+  writable without making the broader home directory writable in the sandbox;
+  it does not guarantee that the host browser can launch in every sandbox.
 - GitHub-backed workflows that expect agents to run `gh` must set
   `codex.turn_sandbox_policy.networkAccess: true`; the shipped workflow does.
 - For path values, `~` is expanded to the home directory.

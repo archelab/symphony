@@ -86,6 +86,32 @@ No description provided.
   commands with `source ~/.zshrc`.
 - The `github_graphql` tool is registered in this Codex session for tracker
   reads/writes that need raw GraphQL.
+- `$agent-browser` may be available for live UI checks. For local workers, its
+  runtime state is prepared under the issue workspace via `$AGENT_BROWSER_HOME`
+  and `$XDG_RUNTIME_DIR`, so do not override those paths unless the operator
+  asks. These paths make browser state writable; they do not guarantee that the
+  host browser can launch inside the current sandbox.
+
+## Verification scope
+
+- If your change touches UI files (LiveView modules/templates, router-visible
+  pages, static assets, or user-facing CSS/JS), run the app on a secondary port
+  such as `4001` and use `$agent-browser` or `browser-use:browser` to inspect
+  the live UI with snapshots/screenshots.
+- If your change is backend-only, do not spend time on browser snapshots unless
+  the issue explicitly asks for them. Prefer API calls, logs, tests, and bounded
+  runtime smoke checks.
+- If browser tooling fails twice because of host/browser launch constraints,
+  stop retrying and record the blocker or caveat in reviewer notes.
+
+## Local runtime smoke checks
+
+- Never leave `./bin/symphony --port ...` attached in the foreground inside this
+  agent session. Start temporary Symphony processes in the background with a
+  timeout, log file, and `trap` cleanup that kills the PID on exit.
+- Use a secondary port such as `4001+`; the operator may already have the main
+  Symphony process running on `4000`.
+- Print one compact result block with the assertions you checked.
 
 ## Reading feedback
 

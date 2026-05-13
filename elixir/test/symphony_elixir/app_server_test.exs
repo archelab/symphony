@@ -1,7 +1,8 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
+  import Bitwise, only: [band: 2]
 
-  test "app server exposes tracker token as GH_TOKEN and GITHUB_TOKEN to spawned Codex" do
+  test "app server exposes tracker token and workspace browser env to spawned Codex" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -19,6 +20,10 @@ defmodule SymphonyElixir.AppServerTest do
       #!/bin/sh
       printf 'GH_TOKEN=%s\\n' "$GH_TOKEN" > "#{env_file}"
       printf 'GITHUB_TOKEN=%s\\n' "$GITHUB_TOKEN" >> "#{env_file}"
+      printf 'AGENT_BROWSER_HOME=%s\\n' "$AGENT_BROWSER_HOME" >> "#{env_file}"
+      printf 'XDG_RUNTIME_DIR=%s\\n' "$XDG_RUNTIME_DIR" >> "#{env_file}"
+      printf 'AGENT_BROWSER_IDLE_TIMEOUT_MS=%s\\n' "$AGENT_BROWSER_IDLE_TIMEOUT_MS" >> "#{env_file}"
+      printf 'AGENT_BROWSER_CONTENT_BOUNDARIES=%s\\n' "$AGENT_BROWSER_CONTENT_BOUNDARIES" >> "#{env_file}"
 
       count=0
       while IFS= read -r _line; do
@@ -64,11 +69,32 @@ defmodule SymphonyElixir.AppServerTest do
       }
 
       assert {:ok, _result} = AppServer.run(workspace, "Check auth env", issue)
+      assert {:ok, canonical_workspace} = SymphonyElixir.PathSafety.canonicalize(workspace)
 
-      assert File.read!(env_file) == "GH_TOKEN=ghp_spawned_token\nGITHUB_TOKEN=ghp_spawned_token\n"
+      assert File.read!(env_file) ==
+               """
+               GH_TOKEN=ghp_spawned_token
+               GITHUB_TOKEN=ghp_spawned_token
+               AGENT_BROWSER_HOME=#{Path.join(canonical_workspace, ".agent-browser")}
+               XDG_RUNTIME_DIR=#{Path.join(canonical_workspace, ".runtime")}
+               AGENT_BROWSER_IDLE_TIMEOUT_MS=60000
+               AGENT_BROWSER_CONTENT_BOUNDARIES=1
+               """
+
+      assert File.dir?(Path.join(workspace, ".agent-browser"))
+      assert File.dir?(Path.join(workspace, ".runtime"))
+      assert file_mode(Path.join(workspace, ".agent-browser")) == 0o700
+      assert file_mode(Path.join(workspace, ".runtime")) == 0o700
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp file_mode(path) do
+    path
+    |> File.stat!()
+    |> Map.fetch!(:mode)
+    |> band(0o777)
   end
 
   test "app server rejects the workspace root and paths outside workspace root" do
