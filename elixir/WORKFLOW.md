@@ -86,6 +86,10 @@ No description provided.
   commands with `source ~/.zshrc`.
 - The `github_graphql` tool is registered in this Codex session for tracker
   reads/writes that need raw GraphQL.
+- The `agent_browser` tool is registered for constrained host-side local UI
+  checks. It can open only localhost/127.0.0.1/[::1] HTTP(S) URLs and supports
+  safe read/capture actions such as `open`, `wait_networkidle`,
+  `snapshot_interactive`, `screenshot`, `get_title`, `get_url`, and `close`.
 - `$agent-browser` may be available for live UI checks. For local workers, its
   runtime state is prepared under the issue workspace via `$AGENT_BROWSER_HOME`
   and `$XDG_RUNTIME_DIR`, so do not override those paths unless the operator
@@ -100,8 +104,8 @@ No description provided.
   `codex.model` for implementation sessions that need it.
 - If your change touches UI files (LiveView modules/templates, router-visible
   pages, static assets, or user-facing CSS/JS), run the app on a secondary port
-  such as `4001` and use `$agent-browser` or `browser-use:browser` to inspect
-  the live UI with snapshots/screenshots.
+  such as `4001` and use `agent_browser`, `$agent-browser`, or
+  `browser-use:browser` to inspect the live UI with snapshots/screenshots.
 - If your change is backend-only, do not spend time on browser snapshots unless
   the issue explicitly asks for them. Prefer API calls, logs, tests, and bounded
   runtime smoke checks.

@@ -3,15 +3,19 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.Codex.GithubGraphqlTool
+  alias SymphonyElixir.Codex.{AgentBrowserTool, GithubGraphqlTool}
 
+  @agent_browser_tool "agent_browser"
   @github_graphql_tool "github_graphql"
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
-  def execute(tool, arguments, _opts \\ []) do
+  def execute(tool, arguments, opts \\ []) do
     case tool do
       @github_graphql_tool ->
         execute_github_graphql(arguments)
+
+      @agent_browser_tool ->
+        execute_agent_browser(arguments, opts)
 
       other ->
         failure_response(%{
@@ -26,14 +30,35 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @spec tool_specs() :: [%{required(String.t()) => term()}, ...]
   def tool_specs do
     %{name: gh_name, description: gh_desc, parameters: gh_params} = GithubGraphqlTool.definition()
+    %{name: browser_name, description: browser_desc, parameters: browser_params} = AgentBrowserTool.definition()
 
     [
       %{
         "name" => gh_name,
         "description" => gh_desc,
         "inputSchema" => gh_params
+      },
+      %{
+        "name" => browser_name,
+        "description" => browser_desc,
+        "inputSchema" => browser_params
       }
     ]
+  end
+
+  defp execute_agent_browser(arguments, opts) when is_map(arguments) do
+    case AgentBrowserTool.handle(arguments, opts) do
+      {:ok, response} -> dynamic_tool_response(true, encode_payload(response))
+      {:error, reason} -> failure_response(agent_browser_error_payload(reason))
+    end
+  end
+
+  defp execute_agent_browser(_arguments, _opts) do
+    failure_response(%{
+      "error" => %{
+        "message" => "`agent_browser` expects an object with an action."
+      }
+    })
   end
 
   defp execute_github_graphql(arguments) when is_map(arguments) do
@@ -90,6 +115,47 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "error" => %{
         "message" => "GitHub GraphQL tool execution failed.",
         "reason" => inspect(reason)
+      }
+    }
+  end
+
+  defp agent_browser_error_payload({:invalid_arguments, message}) do
+    %{"error" => %{"message" => message}}
+  end
+
+  defp agent_browser_error_payload({:unsupported_action, action}) do
+    %{
+      "error" => %{
+        "message" => "`agent_browser` rejected unsupported action `#{action}`.",
+        "supportedActions" => AgentBrowserTool.definition().parameters["properties"]["action"]["enum"]
+      }
+    }
+  end
+
+  defp agent_browser_error_payload({:unsafe_url, message}) do
+    %{"error" => %{"message" => message}}
+  end
+
+  defp agent_browser_error_payload({:workspace_required, message}) do
+    %{"error" => %{"message" => message}}
+  end
+
+  defp agent_browser_error_payload({:browser_runtime_dir_unavailable, path, reason}) do
+    %{
+      "error" => %{
+        "message" => "`agent_browser` could not prepare browser runtime directories.",
+        "path" => path,
+        "reason" => inspect(reason)
+      }
+    }
+  end
+
+  defp agent_browser_error_payload({:agent_browser_failed, status, output}) do
+    %{
+      "error" => %{
+        "message" => "`agent_browser` command failed.",
+        "status" => status,
+        "output" => output
       }
     }
   end

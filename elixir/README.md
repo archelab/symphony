@@ -165,6 +165,11 @@ Notes:
   `XDG_RUNTIME_DIR=<workspace>/.runtime`. This keeps `$agent-browser` state
   writable without making the broader home directory writable in the sandbox;
   it does not guarantee that the host browser can launch in every sandbox.
+- Symphony registers an `agent_browser` Codex dynamic tool for constrained
+  host-side local UI checks. It only opens localhost, `127.0.0.1`, or `[::1]`
+  HTTP(S) URLs and supports safe read/capture actions (`open`,
+  `wait_networkidle`, `snapshot_interactive`, `screenshot`, `get_title`,
+  `get_url`, `close`).
 - Helper agents used only for review, smoke tests, or browser probes should use
   `gpt-5.4-mini` by default, falling back to `gpt-5.4` only when the mini model
   is unavailable.
