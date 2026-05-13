@@ -220,8 +220,9 @@ Fields:
     - `identifier` (string or null) — human-readable identifier
       (`<owner>/<repo>#<number>`).
     - `state` (string or null) — `OPEN` or `CLOSED` from the GitHub Issue state.
-  - For GitHub: derived from Issue `trackedIssues` (the items this issue tracks/depends on).
-    Section 11.3 covers normalization rules and an OPTIONAL label-based fallback.
+  - For GitHub: derived from Issue `blockedBy`, `trackedIssues`, and `subIssues` dependency
+    relations, deduplicated by blocker node ID. Section 11.3 covers normalization rules and
+    an OPTIONAL label-based fallback.
 - `pr` (object or null)
   - Populated only for `pull_request` kind; null otherwise.
   - Fields:
@@ -995,7 +996,7 @@ Cycle handling:
   for that edge, and any other state keeps it unresolved. Cycles that span into or out of
   the candidate set therefore cannot deadlock — at least one out-of-set blocker must be
   CLOSED to break the cycle, and that closure is observable directly from the
-  `Issue.trackedIssues` payload.
+  GitHub Issue dependency payload.
 
 Depth handling:
 
@@ -1606,7 +1607,13 @@ query SymphonyProjectItems($projectId: ID!, $first: Int!, $after: String) {
               id number title body url state createdAt updatedAt
               repository { nameWithOwner owner { login } name }
               labels(first: 50) { nodes { name } }
+              blockedBy(first: 50) {
+                nodes { id number state repository { nameWithOwner } }
+              }
               trackedIssues(first: 50) {
+                nodes { id number state repository { nameWithOwner } }
+              }
+              subIssues(first: 50) {
                 nodes { id number state repository { nameWithOwner } }
               }
             }
@@ -1748,19 +1755,20 @@ Additional normalization details:
   When the field is a number field, pass the value through coerced to integer (drop the value
   if not coercible). When no priority signal is available, fall back to label-based parsing
   (`priority:<n>` or labels matching `tracker.priority_mapping` keys); otherwise null.
-- `blocked_by`: derived from `Issue.trackedIssues.nodes` for items whose underlying content is
-  an Issue. Each ref MUST set `state` to the GitHub Issue state (`OPEN` or `CLOSED`) so that
-  the orchestrator's blocker rule (Section 8.2) can treat `CLOSED` as resolved. Pull Requests
-  and Draft Issues have no blockers in this version.
-  - The candidate query in Section 11.2.2 fetches only the first 50 tracked issues. This
-    specification does not require paginating the dependencies connection in v1; an issue
-    with more than 50 dependencies is treated as if only the first 50 are blockers.
-    Implementations MAY paginate as an extension and SHOULD log a warning when truncation
-    occurs.
+- `blocked_by`: derived from `Issue.blockedBy.nodes`, `Issue.trackedIssues.nodes`, and
+  `Issue.subIssues.nodes` for items whose underlying content is an Issue. Refs from all
+  sources are deduplicated by GitHub node ID. Each ref MUST set `state` to the GitHub Issue
+  state (`OPEN` or `CLOSED`) so that the orchestrator's blocker rule (Section 8.2) can treat
+  `CLOSED` as resolved. Pull Requests and Draft Issues have no blockers in this version.
+  - The candidate query in Section 11.2.2 fetches only the first 50 entries for each supported
+    dependency connection. This specification does not require paginating dependency
+    connections in v1; an issue with more than 50 dependencies in any one source is treated as
+    if only the first 50 from that source are blockers. Implementations MAY paginate as an
+    extension and SHOULD log a warning when truncation occurs.
   - Implementations MAY additionally accept label-based blockers of the form
     `blocked-by:<owner>/<repo>#<number>` or `blocked-by:#<number>` when no
-    `trackedIssues` connection is available. This fallback MUST be opt-in and explicitly
-    documented.
+    supported GitHub dependency connection is available. This fallback MUST be opt-in and
+    explicitly documented.
 - `pr.state`: GitHub `PullRequest.state` (`OPEN`, `CLOSED`, or `MERGED`).
 - `pr.merged`, `pr.merged_at`, `pr.closed_at`, `pr.is_draft`, `pr.base_ref_name`: copied
   through.
@@ -3450,8 +3458,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
     `comment_commands_token_insufficient` at the startup probe (§C.6), and subsequent
     commands are rejected with an operator-visible warning until the token is corrected
 - Pagination preserves order across multiple pages within one fetch
-- Blockers are normalized from `Issue.trackedIssues.nodes`; the optional label-based
-  fallback is exercised only when explicitly enabled
+- Blockers are normalized from `Issue.blockedBy.nodes`, `Issue.trackedIssues.nodes`, and
+  `Issue.subIssues.nodes`, deduplicated by blocker node ID; the optional label-based fallback
+  is exercised only when explicitly enabled
 - Labels are normalized to lowercase
 - Draft Issues are returned with empty labels, null repository, null URL, null number, and
   identifier of the form `draft:<short>`
@@ -4218,5 +4227,3 @@ control plane MUST still validate that `comment_commands.enabled` defaults to `f
 shipped, the test matrix MUST cover: bot self-loop suppression (C.4 step 2),
 `allowed_authors` bypass, permission-denied flow, command-not-in-`commands`-list rejection,
 edit no-op (C.5), and webhook prerequisite validation (C.6).
-
-

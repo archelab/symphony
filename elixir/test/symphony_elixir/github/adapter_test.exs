@@ -106,6 +106,105 @@ defmodule SymphonyElixir.Github.AdapterTest do
     refute "PVTI_draft1" in ids
   end
 
+  test "fetch_candidate_issues requests and normalizes native blockedBy blockers" do
+    payload = %{
+      "data" => %{
+        "node" => %{
+          "id" => "PVT_x",
+          "title" => "Symphony",
+          "number" => 1,
+          "items" => %{
+            "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil},
+            "nodes" => [
+              %{
+                "id" => "PVTI_native_blocked",
+                "type" => "ISSUE",
+                "isArchived" => false,
+                "createdAt" => "2026-05-13T00:00:00Z",
+                "updatedAt" => "2026-05-13T00:00:00Z",
+                "fieldValueByName" => %{"name" => "Agent Ready"},
+                "content" => %{
+                  "__typename" => "Issue",
+                  "id" => "I_native_blocked",
+                  "number" => 128,
+                  "title" => "blocked by native dependency",
+                  "body" => nil,
+                  "url" => "https://github.com/archelab/symphony/issues/128",
+                  "state" => "OPEN",
+                  "createdAt" => "2026-05-13T00:00:00Z",
+                  "updatedAt" => "2026-05-13T00:00:00Z",
+                  "repository" => %{
+                    "nameWithOwner" => "archelab/symphony",
+                    "owner" => %{"login" => "archelab"},
+                    "name" => "symphony",
+                    "defaultBranchRef" => %{"name" => "main"}
+                  },
+                  "labels" => %{"nodes" => []},
+                  "blockedBy" => %{
+                    "nodes" => [
+                      %{
+                        "id" => "I_native_blocker",
+                        "number" => 127,
+                        "state" => "OPEN",
+                        "repository" => %{"nameWithOwner" => "archelab/symphony"}
+                      }
+                    ]
+                  },
+                  "trackedIssues" => %{"nodes" => []},
+                  "subIssues" => %{"nodes" => []}
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+
+    fake = fn query, _vars, _opts ->
+      cond do
+        query =~ "SymphonyResolveProjectByOrg" ->
+          {:ok,
+           %{
+             "data" => %{
+               "organization" => %{"projectV2" => %{"id" => "PVT_x", "title" => "x", "number" => 1}}
+             }
+           }}
+
+        query =~ "SymphonyStatusFieldProbe" ->
+          {:ok,
+           %{
+             "data" => %{
+               "node" => %{
+                 "field" => %{
+                   "__typename" => "ProjectV2SingleSelectField",
+                   "id" => "PVTSSF_x",
+                   "name" => "Status",
+                   "options" => []
+                 }
+               }
+             }
+           }}
+
+        query =~ "SymphonyProjectItems" ->
+          assert query =~ "blockedBy(first: 50)"
+          {:ok, payload}
+      end
+    end
+
+    Application.put_env(:symphony_elixir, :github_client, fake)
+    Adapter.invalidate_cache()
+
+    assert {:ok, [issue]} = Adapter.fetch_candidate_issues()
+
+    assert issue.blocked_by == [
+             %SymphonyElixir.Github.Issue.Blocker{
+               id: "I_native_blocker",
+               identifier: "archelab/symphony#127",
+               state: "OPEN"
+             }
+           ]
+  end
+
   test "workflow reload re-resolves the project (cache invalidation)" do
     resolve_calls = :counters.new(1, [:atomics])
 
@@ -209,6 +308,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
               "number" => 42,
               "state" => "OPEN",
               "repository" => %{"nameWithOwner" => "archelab/symphony"},
+              "blockedBy" => %{"nodes" => []},
               "trackedIssues" => %{
                 "nodes" => [
                   %{
@@ -224,7 +324,8 @@ defmodule SymphonyElixir.Github.AdapterTest do
                     "repository" => %{"nameWithOwner" => "archelab/symphony"}
                   }
                 ]
-              }
+              },
+              "subIssues" => %{"nodes" => []}
             }
           },
           %{
@@ -238,10 +339,12 @@ defmodule SymphonyElixir.Github.AdapterTest do
               "number" => 99,
               "state" => "CLOSED",
               "repository" => %{"nameWithOwner" => "archelab/symphony"},
-              "trackedIssues" => %{"nodes" => []}
+              "blockedBy" => %{"nodes" => []},
+              "trackedIssues" => %{"nodes" => []},
+              "subIssues" => %{"nodes" => []}
             }
           },
-          # Issue row with `trackedIssues` field absent altogether — exercises
+          # Issue row with dependency fields absent altogether — exercises
           # the fallback to `[]` in `blocked_by_from_refresh/1`.
           %{
             "__typename" => "ProjectV2Item",
@@ -351,17 +454,17 @@ defmodule SymphonyElixir.Github.AdapterTest do
     refute Map.has_key?(by_id, "PVTI_redacted")
 
     # SPEC §8.5 Part C — refresh-result `blocked_by` must mirror the live
-    # trackedIssues set so the running-worker reconcile can detect a CLOSED→
-    # OPEN transition on a dependency.
+    # dependency set so the running-worker reconcile can detect a CLOSED→OPEN
+    # transition on a dependency.
     assert by_id["PVTI_iss1"].blocked_by == [
              %{id: "I_blocker1", identifier: "archelab/symphony#11", state: "OPEN"},
              %{id: "I_blocker2", identifier: "archelab/symphony#12", state: "CLOSED"}
            ]
 
-    # Empty trackedIssues → empty list (Issue with no dependencies).
+    # Empty dependency relations → empty list (Issue with no dependencies).
     assert by_id["PVTI_iss_closed"].blocked_by == []
 
-    # Issue row with the trackedIssues field absent altogether also yields [].
+    # Issue row with the dependency fields absent altogether also yields [].
     assert by_id["PVTI_iss_no_tracked"].blocked_by == []
 
     # Non-Issue rows (PR, Draft) carry an empty `blocked_by` list — the
@@ -372,7 +475,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
     assert by_id["PVTI_draft"].blocked_by == []
   end
 
-  describe "fetch_issue_states_by_ids/1 blocked_by (subIssues + trackedIssues)" do
+  describe "fetch_issue_states_by_ids/1 blocked_by (blockedBy + subIssues + trackedIssues)" do
     defp refresh_issue_payload(id, content_extra) do
       %{
         "data" => %{
@@ -398,6 +501,31 @@ defmodule SymphonyElixir.Github.AdapterTest do
           ]
         }
       }
+    end
+
+    test "blockedBy only populates blocked_by" do
+      payload =
+        refresh_issue_payload("PVTI_native_only", %{
+          "blockedBy" => %{
+            "nodes" => [
+              %{
+                "id" => "I_native1",
+                "number" => 31,
+                "state" => "OPEN",
+                "repository" => %{"nameWithOwner" => "archelab/symphony"}
+              }
+            ]
+          },
+          "trackedIssues" => %{"nodes" => []},
+          "subIssues" => %{"nodes" => []}
+        })
+
+      Application.put_env(:symphony_elixir, :github_client, fn _, _, _ -> {:ok, payload} end)
+      assert {:ok, [row]} = Adapter.fetch_issue_states_by_ids(["x"])
+
+      assert row.blocked_by == [
+               %{id: "I_native1", identifier: "archelab/symphony#31", state: "OPEN"}
+             ]
     end
 
     test "subIssues only populates blocked_by" do
@@ -448,7 +576,7 @@ defmodule SymphonyElixir.Github.AdapterTest do
              ]
     end
 
-    test "both relations merge into blocked_by, deduplicated by id" do
+    test "all relations merge into blocked_by, deduplicated by id" do
       shared = %{
         "id" => "I_shared",
         "number" => 21,
@@ -470,8 +598,16 @@ defmodule SymphonyElixir.Github.AdapterTest do
         "repository" => %{"nameWithOwner" => "archelab/symphony"}
       }
 
+      native_only = %{
+        "id" => "I_native_only",
+        "number" => 24,
+        "state" => "OPEN",
+        "repository" => %{"nameWithOwner" => "archelab/symphony"}
+      }
+
       payload =
         refresh_issue_payload("PVTI_merge", %{
+          "blockedBy" => %{"nodes" => [shared, native_only]},
           "trackedIssues" => %{"nodes" => [shared, tr_only]},
           "subIssues" => %{"nodes" => [shared, sub_only]}
         })
@@ -483,13 +619,15 @@ defmodule SymphonyElixir.Github.AdapterTest do
       assert "I_shared" in ids
       assert "I_tr_only" in ids
       assert "I_sub_only" in ids
-      assert length(row.blocked_by) == 3
+      assert "I_native_only" in ids
+      assert length(row.blocked_by) == 4
       assert Enum.count(row.blocked_by, &(&1.id == "I_shared")) == 1
     end
 
     test "neither relation populates blocked_by → empty list" do
       payload =
         refresh_issue_payload("PVTI_none", %{
+          "blockedBy" => %{"nodes" => []},
           "trackedIssues" => %{"nodes" => []},
           "subIssues" => %{"nodes" => []}
         })

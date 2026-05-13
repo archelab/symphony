@@ -861,6 +861,34 @@ defmodule SymphonyElixir.CoreTest do
 
       assert Orchestrator.dispatchable?(issue, tracker_settings)
     end
+
+    test "native blockedBy open blocker prevents dispatch and closed blocker allows it",
+         %{tracker_settings: tracker_settings} do
+      open_issue =
+        Issue.new(%{
+          id: "PVTI_native_blocked",
+          identifier: "archelab/symphony#15",
+          kind: "issue",
+          state: "Agent Ready",
+          issue_state: "OPEN",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          blocked_by: [%{id: "I_native_open", identifier: "archelab/symphony#16", state: "OPEN"}]
+        })
+
+      closed_issue =
+        Issue.new(%{
+          id: "PVTI_native_unblocked",
+          identifier: "archelab/symphony#17",
+          kind: "issue",
+          state: "Agent Ready",
+          issue_state: "OPEN",
+          repository: %{owner: "archelab", name: "symphony", name_with_owner: "archelab/symphony"},
+          blocked_by: [%{id: "I_native_closed", identifier: "archelab/symphony#18", state: "CLOSED"}]
+        })
+
+      refute Orchestrator.dispatchable?(open_issue, tracker_settings)
+      assert Orchestrator.dispatchable?(closed_issue, tracker_settings)
+    end
   end
 
   describe "reconcile_running/3 (SPEC §8.5 Part B + §13.1 stop-reason vocab)" do
