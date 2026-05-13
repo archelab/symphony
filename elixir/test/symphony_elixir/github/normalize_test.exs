@@ -205,7 +205,7 @@ defmodule SymphonyElixir.Github.NormalizeTest do
     assert {:ok, %Issue{blocked_by: []}} = Normalize.item(item, status_field: "Status")
   end
 
-  test "blockers/2 is empty list for issue without trackedIssues key" do
+  test "blockers/2 is empty list for issue without dependency keys" do
     item = %{
       "type" => "ISSUE",
       "id" => "PVTI_no_tracked",
@@ -250,12 +250,13 @@ defmodule SymphonyElixir.Github.NormalizeTest do
     assert {:ok, %Issue{repository: nil}} = Normalize.item(item, status_field: "Status")
   end
 
-  describe "blockers (sub-issues + tracked-issues)" do
-    # Spec §8.2.1: a parent issue gated by an open child via the new GitHub
-    # sub-issues UI must have its child counted as a blocker. GitHub exposes
-    # two distinct relations — `trackedIssues` (legacy "Tracking" markdown
-    # relation) and `subIssues` (new hierarchical UI). Adapter must read BOTH
-    # and merge them, deduplicated by node id.
+  describe "blockers (blockedBy + sub-issues + tracked-issues)" do
+    # Spec §8.2.1: a parent issue gated by an open child via GitHub dependency
+    # relations must have its child counted as a blocker. GitHub exposes three
+    # distinct relations — `blockedBy` (native dependency), `trackedIssues`
+    # (legacy "Tracking" markdown relation), and `subIssues` (new hierarchical
+    # UI). Adapter must read all supported sources and merge them, deduplicated
+    # by node id.
 
     defp blockers_item(extra_content) do
       base = %{
@@ -280,6 +281,48 @@ defmodule SymphonyElixir.Github.NormalizeTest do
         "fieldValueByName" => %{"name" => "Agent Ready"},
         "content" => Map.merge(base, extra_content)
       }
+    end
+
+    test "blockedBy populates blocked_by when other relations are empty" do
+      item =
+        blockers_item(%{
+          "blockedBy" => %{
+            "nodes" => [
+              %{
+                "id" => "I_native_open",
+                "number" => 31,
+                "state" => "OPEN",
+                "repository" => %{"nameWithOwner" => "archelab/symphony"}
+              }
+            ]
+          },
+          "trackedIssues" => %{"nodes" => []},
+          "subIssues" => %{"nodes" => []}
+        })
+
+      assert {:ok, %Issue{blocked_by: [blocker]}} = Normalize.item(item, status_field: "Status")
+      assert %Issue.Blocker{id: "I_native_open", identifier: "archelab/symphony#31", state: "OPEN"} = blocker
+    end
+
+    test "closed blockedBy blocker is preserved as resolved dependency state" do
+      item =
+        blockers_item(%{
+          "blockedBy" => %{
+            "nodes" => [
+              %{
+                "id" => "I_native_closed",
+                "number" => 32,
+                "state" => "CLOSED",
+                "repository" => %{"nameWithOwner" => "archelab/symphony"}
+              }
+            ]
+          },
+          "trackedIssues" => %{"nodes" => []},
+          "subIssues" => %{"nodes" => []}
+        })
+
+      assert {:ok, %Issue{blocked_by: [blocker]}} = Normalize.item(item, status_field: "Status")
+      assert %Issue.Blocker{id: "I_native_closed", identifier: "archelab/symphony#32", state: "CLOSED"} = blocker
     end
 
     test "subIssues populates blocked_by when trackedIssues is empty" do
@@ -322,7 +365,7 @@ defmodule SymphonyElixir.Github.NormalizeTest do
       assert %Issue.Blocker{id: "I_tr1", identifier: "archelab/symphony#7", state: "CLOSED"} = blocker
     end
 
-    test "both relations merge into blocked_by, deduplicated by id" do
+    test "all relations merge into blocked_by, deduplicated by id" do
       shared = %{
         "id" => "I_shared",
         "number" => 21,
@@ -344,8 +387,16 @@ defmodule SymphonyElixir.Github.NormalizeTest do
         "repository" => %{"nameWithOwner" => "archelab/symphony"}
       }
 
+      native_only = %{
+        "id" => "I_native_only",
+        "number" => 24,
+        "state" => "OPEN",
+        "repository" => %{"nameWithOwner" => "archelab/symphony"}
+      }
+
       item =
         blockers_item(%{
+          "blockedBy" => %{"nodes" => [shared, native_only]},
           "trackedIssues" => %{"nodes" => [shared, tr_only]},
           "subIssues" => %{"nodes" => [shared, sub_only]}
         })
@@ -355,12 +406,19 @@ defmodule SymphonyElixir.Github.NormalizeTest do
       assert "I_shared" in ids
       assert "I_tr_only" in ids
       assert "I_sub_only" in ids
-      assert length(blockers) == 3
+      assert "I_native_only" in ids
+      assert length(blockers) == 4
       assert Enum.count(blockers, &(&1.id == "I_shared")) == 1
     end
 
     test "neither relation populates blocked_by → empty list" do
-      item = blockers_item(%{"trackedIssues" => %{"nodes" => []}, "subIssues" => %{"nodes" => []}})
+      item =
+        blockers_item(%{
+          "blockedBy" => %{"nodes" => []},
+          "trackedIssues" => %{"nodes" => []},
+          "subIssues" => %{"nodes" => []}
+        })
+
       assert {:ok, %Issue{blocked_by: []}} = Normalize.item(item, status_field: "Status")
 
       # Both keys absent → also empty.

@@ -11,10 +11,11 @@ defmodule SymphonyElixir.Github.Adapter do
 
   # Composable fragments — Phase 2 adds @pr_fragment_tier2 by concatenation
   # without rewriting the surrounding query. Spec §11.7 expansion.
-  # SPEC §8.2.1 dependency gating reads BOTH relations: `trackedIssues` is the
-  # legacy "Tracking" markdown relation; `subIssues` is the new hierarchical
+  # SPEC §8.2.1 dependency gating reads all GitHub Issue dependency relations:
+  # `blockedBy` is GitHub's native dependency edge, `trackedIssues` is the
+  # legacy "Tracking" markdown relation, and `subIssues` is the hierarchical
   # sub-issues UI. They are SEPARATE relations on the GitHub Issue type — one
-  # does not subsume the other. Merge happens downstream in Normalize.blockers/2.
+  # does not subsume the others. Merge happens downstream in Normalize.blockers/2.
   @issue_fragment """
   ... on Issue {
     id number title body url state createdAt updatedAt
@@ -23,6 +24,9 @@ defmodule SymphonyElixir.Github.Adapter do
       defaultBranchRef { name }
     }
     labels(first: 50) { nodes { name } }
+    blockedBy(first: 50) {
+      nodes { id number state repository { nameWithOwner } }
+    }
     trackedIssues(first: 50) {
       nodes { id number state repository { nameWithOwner } }
     }
@@ -90,6 +94,9 @@ defmodule SymphonyElixir.Github.Adapter do
           __typename
           ... on Issue {
             id number state repository { nameWithOwner }
+            blockedBy(first: 50) {
+              nodes { id number state repository { nameWithOwner } }
+            }
             trackedIssues(first: 50) {
               nodes { id number state repository { nameWithOwner } }
             }
@@ -214,15 +221,17 @@ defmodule SymphonyElixir.Github.Adapter do
   # and an empty list otherwise so the orchestrator can compare against the
   # snapshot taken at dispatch.
   #
-  # Both `trackedIssues` (legacy "Tracking" markdown relation) and `subIssues`
-  # (new sub-issues UI) count as blockers — the same child issue may appear
-  # in both, so we deduplicate on the GitHub node `id`.
+  # `blockedBy` (native GitHub dependency), `trackedIssues` (legacy "Tracking"
+  # markdown relation), and `subIssues` (sub-issues UI) count as blockers — the
+  # same child issue may appear in multiple relations, so we deduplicate on the
+  # GitHub node `id`.
   defp blocked_by_from_refresh(%{"content" => %{"__typename" => "Issue"} = content}) do
+    blocked_by = get_in(content, ["blockedBy", "nodes"]) || []
     tracked = get_in(content, ["trackedIssues", "nodes"]) || []
     sub = get_in(content, ["subIssues", "nodes"]) || []
 
     for %{"id" => id, "number" => n, "state" => state, "repository" => %{"nameWithOwner" => nwo}} <-
-          Enum.uniq_by(sub ++ tracked, & &1["id"]) do
+          Enum.uniq_by(blocked_by ++ sub ++ tracked, & &1["id"]) do
       %{id: id, identifier: "#{nwo}##{n}", state: state}
     end
   end
