@@ -80,6 +80,9 @@ defmodule SymphonyElixir.Orchestrator do
             required(:duration_ms) => non_neg_integer(),
             required(:identifier) => String.t() | nil,
             required(:model) => String.t() | nil,
+            required(:codex_input_tokens) => non_neg_integer(),
+            required(:codex_output_tokens) => non_neg_integer(),
+            required(:codex_total_tokens) => non_neg_integer(),
             required(:stop_reason) => atom() | nil
           }
 
@@ -1134,6 +1137,9 @@ defmodule SymphonyElixir.Orchestrator do
       completed_at: completed_at,
       duration_ms: duration_ms_for(running_entry),
       model: Map.get(running_entry, :model),
+      codex_input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
+      codex_output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
+      codex_total_tokens: Map.get(running_entry, :codex_total_tokens, 0),
       stop_reason: stop_reason
     }
   end
@@ -1518,6 +1524,24 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec completed_sessions() :: [State.session_record()] | :timeout | :unavailable
+  def completed_sessions, do: completed_sessions(__MODULE__, 5_000)
+
+  @spec completed_sessions(GenServer.server(), timeout()) ::
+          [State.session_record()] | :timeout | :unavailable
+  def completed_sessions(server, timeout \\ 5_000) do
+    if server_available?(server) do
+      try do
+        GenServer.call(server, :completed_sessions, timeout)
+      catch
+        :exit, {:timeout, _} -> :timeout
+        :exit, _ -> :unavailable
+      end
+    else
+      :unavailable
+    end
+  end
+
   @impl true
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
@@ -1531,6 +1555,14 @@ defmodule SymphonyElixir.Orchestrator do
           issue_id: issue_id,
           identifier: metadata.identifier,
           state: metadata.issue.state,
+          kind: Map.get(metadata.issue, :kind),
+          title: Map.get(metadata.issue, :title),
+          content_id: Map.get(metadata.issue, :content_id),
+          url: Map.get(metadata.issue, :url),
+          number: Map.get(metadata.issue, :number),
+          repository: Map.get(metadata.issue, :repository),
+          branch_name: Map.get(metadata.issue, :branch_name),
+          pr: Map.get(metadata.issue, :pr),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
@@ -1540,6 +1572,10 @@ defmodule SymphonyElixir.Orchestrator do
           codex_total_tokens: metadata.codex_total_tokens,
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
+          dispatched_at: Map.get(metadata, :dispatched_at),
+          thread_id: Map.get(metadata, :thread_id),
+          model: Map.get(metadata, :model),
+          retry_attempt: Map.get(metadata, :retry_attempt),
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
@@ -1573,6 +1609,17 @@ defmodule SymphonyElixir.Orchestrator do
          poll_interval_ms: state.poll_interval_ms
        }
      }, state}
+  end
+
+  def handle_call(:completed_sessions, _from, %State{} = state) do
+    sessions =
+      state.completed
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.sort_by(&Map.get(&1, :completed_at, ""), :desc)
+      |> Enum.take(max_sessions())
+
+    {:reply, sessions, state}
   end
 
   def handle_call({:completed_sessions_for, identifier}, _from, %State{} = state)

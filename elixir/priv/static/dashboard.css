@@ -177,11 +177,24 @@ pre,
   letter-spacing: -0.04em;
 }
 
+.detail-title {
+  margin: 0.35rem 0 0;
+  font-size: clamp(1.7rem, 3vw, 2.6rem);
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
 .hero-copy {
   margin: 0.75rem 0 0;
   max-width: 46rem;
   color: var(--muted);
   font-size: 1rem;
+}
+
+.metric-value-tight {
+  overflow-wrap: anywhere;
+  font-size: clamp(1.2rem, 1.8vw, 1.55rem);
+  letter-spacing: 0;
 }
 
 .status-stack {
@@ -393,6 +406,101 @@ pre,
   font-size: 0.86rem;
 }
 
+.subtle-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  width: fit-content;
+  padding: 0.34rem 0.72rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.subtle-link:hover {
+  background: white;
+  color: var(--ink);
+}
+
+.link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.detail-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.85rem;
+  margin: 1rem 0 0;
+}
+
+.detail-list div {
+  min-width: 0;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.detail-list dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.detail-list dd {
+  margin: 0.28rem 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.94rem;
+}
+
+.timeline-list {
+  display: grid;
+  gap: 0.65rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.timeline-list li {
+  display: grid;
+  grid-template-columns: minmax(11rem, 0.8fr) minmax(8rem, 0.45fr) minmax(0, 1.4fr);
+  gap: 0.75rem;
+  align-items: start;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.timeline-time,
+.timeline-message {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.timeline-event {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.timeline-note {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.timeline-note p {
+  margin: 0;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -446,6 +554,11 @@ pre,
 
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .timeline-list li {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
   }
 }
 

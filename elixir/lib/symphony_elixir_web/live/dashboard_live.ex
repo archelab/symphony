@@ -93,6 +93,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
 
           <article class="metric-card">
+            <p class="metric-label">Completed</p>
+            <p class="metric-value numeric"><%= @payload.counts.completed %></p>
+            <p class="metric-detail">Recent finished sessions retained by the runtime.</p>
+          </article>
+
+          <article class="metric-card">
             <p class="metric-label">Total tokens</p>
             <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
             <p class="metric-detail numeric">
@@ -154,7 +160,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/api/v1/#{URI.encode_www_form(entry.issue_identifier)}"}>JSON details</a>
+                        <a class="issue-link" href={issue_detail_path(entry.issue_identifier)}>Issue details</a>
+                        <a class="issue-link" href={"/api/v1/#{URI.encode_www_form(entry.issue_identifier)}"}>Raw JSON</a>
                       </div>
                     </td>
                     <td>
@@ -233,12 +240,64 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/api/v1/#{URI.encode_www_form(entry.issue_identifier)}"}>JSON details</a>
+                        <a class="issue-link" href={issue_detail_path(entry.issue_identifier)}>Issue details</a>
+                        <a class="issue-link" href={"/api/v1/#{URI.encode_www_form(entry.issue_identifier)}"}>Raw JSON</a>
                       </div>
                     </td>
                     <td><%= entry.attempt %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>
                     <td><%= entry.error || "n/a" %></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Completed sessions</h2>
+              <p class="section-copy">Recent finished issue sessions, including stop reason and token totals.</p>
+            </div>
+          </div>
+
+          <%= if @payload.completed == [] do %>
+            <p class="empty-state">No completed sessions retained.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>Attempt</th>
+                    <th>Completed</th>
+                    <th>Duration</th>
+                    <th>Model</th>
+                    <th>Tokens</th>
+                    <th>Stop reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.completed}>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= entry.issue_identifier || entry.issue_id %></span>
+                        <a
+                          :if={entry.issue_identifier}
+                          class="issue-link"
+                          href={issue_detail_path(entry.issue_identifier)}
+                        >
+                          Issue details
+                        </a>
+                      </div>
+                    </td>
+                    <td class="numeric"><%= entry.attempt %></td>
+                    <td class="mono"><%= entry.completed_at || "n/a" %></td>
+                    <td class="numeric"><%= format_duration_ms(entry.duration_ms) %></td>
+                    <td><%= entry.model || "n/a" %></td>
+                    <td class="numeric"><%= format_int(entry.tokens.total_tokens) %></td>
+                    <td><%= entry.stop_reason || "n/a" %></td>
                   </tr>
                 </tbody>
               </table>
@@ -300,6 +359,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp runtime_seconds_from_started_at(_started_at, _now), do: 0
 
+  defp format_duration_ms(ms) when is_integer(ms) do
+    total_seconds = div(ms, 1_000)
+    mins = div(total_seconds, 60)
+    secs = rem(total_seconds, 60)
+    "#{mins}m #{secs}s"
+  end
+
+  defp format_duration_ms(_ms), do: "n/a"
+
   defp format_int(value) when is_integer(value) do
     value
     |> Integer.to_string()
@@ -309,6 +377,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_int(_value), do: "n/a"
+
+  defp issue_detail_path(issue_identifier) do
+    "/issues?issue=#{URI.encode_www_form(issue_identifier)}"
+  end
 
   defp state_badge_class(state) do
     base = "state-badge"
