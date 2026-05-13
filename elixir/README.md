@@ -165,6 +165,24 @@ Notes:
   `XDG_RUNTIME_DIR=<workspace>/.runtime`. This keeps `$agent-browser` state
   writable without making the broader home directory writable in the sandbox;
   it does not guarantee that the host browser can launch in every sandbox.
+- Helper agents used only for review, smoke tests, or browser probes should use
+  `gpt-5.4-mini` by default, falling back to `gpt-5.4` only when the mini model
+  is unavailable.
+- If `$agent-browser` is discoverable but cannot launch inside a Codex sandbox,
+  validate the same target from a host shell with workspace-local browser state:
+
+  ```bash
+  mkdir -p .agent-browser .runtime
+  chmod 700 .agent-browser .runtime
+  AGENT_BROWSER_HOME="$PWD/.agent-browser" \
+    XDG_RUNTIME_DIR="$PWD/.runtime" \
+    AGENT_BROWSER_IDLE_TIMEOUT_MS=60000 \
+    AGENT_BROWSER_CONTENT_BOUNDARIES=1 \
+    agent-browser open http://127.0.0.1:4001/ && \
+    agent-browser wait --load networkidle && \
+    agent-browser snapshot -i && \
+    agent-browser close
+  ```
 - GitHub-backed workflows that expect agents to run `gh` must set
   `codex.turn_sandbox_policy.networkAccess: true`; the shipped workflow does.
 - For path values, `~` is expanded to the home directory.

@@ -94,6 +94,10 @@ No description provided.
 
 ## Verification scope
 
+- For helper agents, review-only agents, smoke-test probes, and browser-check
+  probes, use `gpt-5.4-mini` by default to keep validation cost low. If that
+  model is unavailable, fall back to `gpt-5.4`. Reserve the workflow's primary
+  `codex.model` for implementation sessions that need it.
 - If your change touches UI files (LiveView modules/templates, router-visible
   pages, static assets, or user-facing CSS/JS), run the app on a secondary port
   such as `4001` and use `$agent-browser` or `browser-use:browser` to inspect
@@ -102,7 +106,10 @@ No description provided.
   the issue explicitly asks for them. Prefer API calls, logs, tests, and bounded
   runtime smoke checks.
 - If browser tooling fails twice because of host/browser launch constraints,
-  stop retrying and record the blocker or caveat in reviewer notes.
+  stop retrying and record the blocker or caveat in reviewer notes. If the
+  operator asks for a host-side browser check, provide the exact commands they
+  can run outside the Codex sandbox instead of switching to a more expensive
+  model.
 
 ## Local runtime smoke checks
 
