@@ -106,8 +106,14 @@ No description provided.
   `codex.model` for implementation sessions that need it.
 - If your change touches UI files (LiveView modules/templates, router-visible
   pages, static assets, or user-facing CSS/JS), run the app on a secondary port
-  such as `4001` and use `agent_browser`, `$agent-browser`, or
-  `browser-use:browser` to inspect the live UI with snapshots/screenshots.
+  such as `4001` and inspect the live UI with browser evidence. Use the
+  registered `agent_browser` tool first when it is available. If it is not
+  available or cannot launch, use `$agent-browser`; use `browser-use:browser`
+  only as a fallback when the first two paths are unavailable.
+- Do not satisfy a UI verification requirement by assuming tests are enough.
+  Capture browser evidence from the live app: at minimum open the page, wait for
+  it to load, take an interactive snapshot or screenshot, inspect console/errors
+  when supported, and close the browser/session.
 - If your change is backend-only, do not spend time on browser snapshots unless
   the issue explicitly asks for them. Prefer API calls, logs, tests, and bounded
   runtime smoke checks.
@@ -119,9 +125,13 @@ No description provided.
 
 ## Local runtime smoke checks
 
-- Never leave `./bin/symphony --port ...` attached in the foreground inside this
-  agent session. Start temporary Symphony processes in the background with a
-  timeout, log file, and `trap` cleanup that kills the PID on exit.
+- Never leave `mix phx.server`, `./bin/symphony --port ...`, or any other
+  long-running local web runtime attached in the foreground inside this agent
+  session. Foreground servers can block the agent turn, stream dashboard output
+  forever, and burn tokens without making progress.
+- Start temporary UI/smoke runtimes in the background with a timeout, log file,
+  and `trap` cleanup that kills the PID on exit. Record the PID, poll the health
+  or API endpoint, then shut the process down before finishing.
 - Use a secondary port such as `4001+`; the operator may already have the main
   Symphony process running on `4000`.
 - Print one compact result block with the assertions you checked.
