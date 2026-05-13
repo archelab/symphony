@@ -35,7 +35,7 @@ agent:
   session_summary:
     enabled: false
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
+  command: codex --search --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
   model: "gpt-5.5"
   approval_policy: never
   thread_sandbox: workspace-write
