@@ -88,8 +88,10 @@ No description provided.
   reads/writes that need raw GraphQL.
 - The `agent_browser` tool is registered for constrained host-side local UI
   checks. It can open only localhost/127.0.0.1/[::1] HTTP(S) URLs and supports
-  safe read/capture actions such as `open`, `wait_networkidle`,
-  `snapshot_interactive`, `screenshot`, `get_title`, `get_url`, and `close`.
+  safe local inspection/interactions such as `open`, `wait_networkidle`,
+  `wait_text`, `wait_selector`, `wait_ms`, `snapshot_interactive`,
+  `screenshot`, `get_title`, `get_url`, `click`, `fill`, `type`, `press`,
+  `select`, `console`, `errors`, and `close`.
 - `$agent-browser` may be available for live UI checks. For local workers, its
   runtime state is prepared under the issue workspace via `$AGENT_BROWSER_HOME`
   and `$XDG_RUNTIME_DIR`, so do not override those paths unless the operator

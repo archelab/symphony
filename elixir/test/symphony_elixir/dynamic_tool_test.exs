@@ -34,6 +34,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert browser_description =~ "localhost"
     assert "open" in actions
     assert "snapshot_interactive" in actions
+    assert "click" in actions
+    assert "fill" in actions
+    assert "console" in actions
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -268,24 +271,14 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         flunk("agent-browser runner should not be called for unsupported actions")
       end)
 
-      response = DynamicTool.execute("agent_browser", %{"action" => "click"}, workspace: tmp_workspace())
+      response = DynamicTool.execute("agent_browser", %{"action" => "chat"}, workspace: tmp_workspace())
 
       assert response["success"] == false
 
-      assert Jason.decode!(response["output"]) == %{
-               "error" => %{
-                 "message" => "`agent_browser` rejected unsupported action `click`.",
-                 "supportedActions" => [
-                   "open",
-                   "wait_networkidle",
-                   "snapshot_interactive",
-                   "screenshot",
-                   "get_title",
-                   "get_url",
-                   "close"
-                 ]
-               }
-             }
+      decoded = Jason.decode!(response["output"])
+      assert decoded["error"]["message"] == "`agent_browser` rejected unsupported action `chat`."
+      assert "click" in decoded["error"]["supportedActions"]
+      assert "chat" not in decoded["error"]["supportedActions"]
     end
 
     test "missing action is rejected before calling the runner" do
@@ -360,16 +353,126 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
       for {action, command} <- [
             {"wait_networkidle", ["wait", "--load", "networkidle"]},
+            {"wait_text", ["wait", "--text", "Dashboard"]},
+            {"wait_selector", ["wait", "@e1"]},
+            {"wait_ms", ["wait", "250"]},
             {"get_url", ["get", "url"]},
+            {"console", ["console"]},
+            {"errors", ["errors"]},
             {"close", ["close"]},
             {"screenshot", ["screenshot"]}
           ] do
-        response = DynamicTool.execute("agent_browser", %{"action" => action}, workspace: workspace)
+        args =
+          case action do
+            "wait_text" -> %{"action" => action, "text" => "Dashboard"}
+            "wait_selector" -> %{"action" => action, "selector" => "@e1"}
+            "wait_ms" -> %{"action" => action, "ms" => 250}
+            _ -> %{"action" => action}
+          end
+
+        response = DynamicTool.execute("agent_browser", args, workspace: workspace)
 
         assert response["success"] == true
         assert_received {:agent_browser_called, ^command, ^workspace}
         assert Jason.decode!(response["output"])["action"] == action
       end
+    end
+
+    test "interaction actions map to allowlisted agent-browser commands" do
+      workspace = tmp_workspace()
+      test_pid = self()
+
+      Application.put_env(:symphony_elixir, :agent_browser_runner, fn command, cwd, _env ->
+        send(test_pid, {:agent_browser_called, command, cwd})
+        {Enum.join(command, " "), 0}
+      end)
+
+      cases = [
+        {%{"action" => "click", "selector" => "@e1"}, ["click", "@e1"]},
+        {%{"action" => "click", "selector" => "@e2", "new_tab" => true}, ["click", "@e2", "--new-tab"]},
+        {%{"action" => "fill", "selector" => "#email", "text" => "pedro@example.com"}, ["fill", "#email", "pedro@example.com"]},
+        {%{"action" => "type", "selector" => "#search", "text" => "abc"}, ["type", "#search", "abc"]},
+        {%{"action" => "press", "key" => "Control+a"}, ["press", "Control+a"]},
+        {%{"action" => "select", "selector" => "#country", "value" => "BR"}, ["select", "#country", "BR"]},
+        {%{"action" => "select", "selector" => "#roles", "values" => ["admin", "reviewer"]}, ["select", "#roles", "admin", "reviewer"]}
+      ]
+
+      for {args, command} <- cases do
+        response = DynamicTool.execute("agent_browser", args, workspace: workspace)
+
+        assert response["success"] == true
+        assert_received {:agent_browser_called, ^command, ^workspace}
+        assert Jason.decode!(response["output"])["argv"] == ["agent-browser" | command]
+      end
+    end
+
+    test "interaction actions validate required fields before calling the runner" do
+      Application.put_env(:symphony_elixir, :agent_browser_runner, fn _command, _workspace, _env ->
+        flunk("agent-browser runner should not be called for invalid interaction arguments")
+      end)
+
+      for args <- [
+            %{"action" => "click"},
+            %{"action" => "fill", "selector" => "#email"},
+            %{"action" => "type", "text" => "abc"},
+            %{"action" => "press"},
+            %{"action" => "press", "key" => "Control a"},
+            %{"action" => "select"},
+            %{"action" => "select", "selector" => "#country"},
+            %{"action" => "select", "selector" => "#country", "values" => []},
+            %{"action" => "wait_ms", "ms" => 60_001},
+            %{"action" => "wait_text"},
+            %{"action" => "wait_selector"},
+            %{"action" => "screenshot", "path" => 123}
+          ] do
+        response = DynamicTool.execute("agent_browser", args, workspace: tmp_workspace())
+
+        assert response["success"] == false
+        assert Jason.decode!(response["output"])["error"]["message"] =~ "`agent_browser`"
+      end
+    end
+
+    test "screenshot supports safe relative output paths and options" do
+      workspace = tmp_workspace()
+      test_pid = self()
+
+      Application.put_env(:symphony_elixir, :agent_browser_runner, fn command, cwd, _env ->
+        send(test_pid, {:agent_browser_called, command, cwd})
+        {"saved", 0}
+      end)
+
+      response =
+        DynamicTool.execute(
+          "agent_browser",
+          %{
+            "action" => "screenshot",
+            "selector" => "#main",
+            "path" => "tmp/symphony-dashboard.png",
+            "full" => true,
+            "annotate" => true
+          },
+          workspace: workspace
+        )
+
+      assert response["success"] == true
+
+      assert_received {:agent_browser_called, ["screenshot", "--full", "--annotate", "#main", "tmp/symphony-dashboard.png"], ^workspace}
+    end
+
+    test "screenshot rejects paths outside the issue workspace" do
+      Application.put_env(:symphony_elixir, :agent_browser_runner, fn _command, _workspace, _env ->
+        flunk("agent-browser runner should not be called for unsafe screenshot paths")
+      end)
+
+      response =
+        DynamicTool.execute(
+          "agent_browser",
+          %{"action" => "screenshot", "path" => "../outside.png"},
+          workspace: tmp_workspace()
+        )
+
+      assert response["success"] == false
+      assert Jason.decode!(response["output"])["error"]["message"] =~ "inside the issue workspace"
     end
 
     test "default runner executes configured agent-browser executable" do
