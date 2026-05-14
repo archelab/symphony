@@ -132,6 +132,20 @@ Memory returns `[%Github.Issue{}]`; Github returns `[%{id, identifier, state, bl
 
 `presenter.ex:66-74` collapses `Orchestrator.snapshot/2` returning `:timeout` / `:unavailable` into `{:error, :issue_not_found}` → HTTP 404. An operator hitting the endpoint while the orchestrator is slow is told the issue does not exist — wrong diagnosis. The sibling `state_payload/2` already distinguishes these correctly. **How:** match `:timeout` / `:unavailable` explicitly in `issue_payload/3`, return distinct error atoms, map to 503/504 in the controller.
 
+### P3.6 — Workpad session times are rendered raw (UTC ISO8601, ms integer) `[operator request]`
+
+**Symptom.** The workpad table Symphony feeds the agent — the per-issue "dashboard" the agent posts as a GitHub issue comment — carries machine-readable values straight from storage. `duration_ms` is a raw millisecond integer; `dispatched_at` / `completed_at` are UTC ISO8601 strings (`2026-05-14T19:47:50.123456Z`). `session_history.ex` stores them that way (`DateTime.to_iso8601/1`, `DateTime.diff(_, :millisecond)`), and `prompt_builder.ex` `prior_sessions_to_solid/1` passes them through unformatted into the `prior_sessions` and `dispatched_at` prompt variables. The rendered table's Dispatched / Completed / Duration columns are therefore hard to scan.
+
+**How.**
+- Add two helpers (natural home: the `Observability.Format` module proposed in P3.3):
+  - `format_duration(ms)` → `"<h>h<m>m"` — e.g. `0h4m`, `1h23m`. Minutes floored, seconds dropped; a sub-minute session reads `0h0m`.
+  - `format_timestamp(iso8601_utc)` → `"YYYY-MM-DD HH:MM:SS"` in `America/São_Paulo`. São Paulo has been a fixed UTC−03:00 since 2019 (no DST) — apply a fixed −3h shift rather than pulling in a timezone database, consistent with the repo/global convention of explicit `-03:00` timestamps.
+- Apply them **at render time only** — in `prompt_builder.ex`, where `prior_sessions` (the `dispatched_at` / `completed_at` / `duration_ms` fields of each record) and the standalone `dispatched_at` variable enter the prompt.
+- **Keep storage machine-readable.** The stored `session_record` must keep `duration_ms` as an integer and `dispatched_at` / `completed_at` as UTC ISO8601 — the web dashboard and `/api/v1/<id>` depend on those shapes (hard-earned rule #12). Do not reformat at the `session_history.ex` write site.
+- Update `WORKFLOW.workpad.example.md` (and the default `WORKFLOW.md` workpad block, if it shows a sample row) so the template's Dispatched / Completed / Duration columns reflect the new format.
+
+**Verify.** Unit tests for both helpers — including a sub-minute duration → `0h0m` and a UTC instant near midnight that crosses the −3h boundary into the previous day. `mix test_strict` green; the session-summary `live_github` test still passes.
+
 ---
 
 ## Priority 4 — Low / cleanup
@@ -154,7 +168,7 @@ Memory returns `[%Github.Issue{}]`; Github returns `[%{id, identifier, state, bl
 3. **P3.4 + draft-identifier dedup** — both touch `Github.Normalize`; kills a dialyzer blind spot; contained.
 4. **P2.1** — the spine refactor (`RetryQueue`, `Dispatcher`, `Cycle`, `RunningEntry` struct). Incremental, one sub-module extraction per PR. **P2.3** (`*_for_test` removal) and most of **P2.4** (`ignore_modules` shrink) fall out of this. Split the monolithic test files as the modules they cover get extracted.
 5. **P2.5** — `AgentRunner.TurnPlan` + failure-path tests.
-6. **P3.2, P3.3** — security-boundary parser; Codex / StatusDashboard module splits. Independent; schedule after the spine work.
+6. **P3.2, P3.3, P3.6** — security-boundary parser; Codex / StatusDashboard module splits; workpad time formatting. P3.6 shares the `Observability.Format` module with P3.3, so do them together. Independent of the spine work; schedule after it.
 7. **P3.1, P3.5, P4.\*** — fold into whichever PR touches the relevant file.
 
 ## Out of scope
