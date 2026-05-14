@@ -260,6 +260,9 @@ The observability UI now runs on a minimal Phoenix stack:
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
+`SymphonyElixir.Observability.Projection` builds the API/LiveView read models
+from orchestrator snapshots; terminal rendering stays in `StatusDashboard`.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks

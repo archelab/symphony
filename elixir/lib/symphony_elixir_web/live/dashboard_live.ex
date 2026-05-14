@@ -5,7 +5,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
+  alias SymphonyElixir.Observability.Notifications
+  alias SymphonyElixirWeb.{Endpoint, Presenter}
   @runtime_tick_ms 1_000
 
   @impl true
@@ -17,7 +18,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     _ =
       if connected?(socket) do
-        :ok = ObservabilityPubSub.subscribe()
+        :ok = Notifications.subscribe()
         schedule_runtime_tick()
       end
 

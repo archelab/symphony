@@ -33,6 +33,11 @@ When logging Codex execution lifecycle events, include:
 - `Orchestrator`: log dispatch, retry, terminal/non-active transitions, and worker exits with issue context. Include `session_id` whenever running-entry data has it.
 - `Codex.AppServer`: log session start/completion/error with issue context and `session_id`.
 
+Pure orchestration decisions live outside the GenServer where possible. Keep
+side-effecting lifecycle logs in `SymphonyElixir.Orchestrator`, and keep
+decision Modules free of Logger calls unless a future interface explicitly
+returns structured log events.
+
 ## Checklist For New Logs
 
 - Is this event tied to a GitHub Projects v2 issue? Include `issue_id` and `issue_identifier`.

@@ -5,7 +5,8 @@ defmodule SymphonyElixirWeb.IssueLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
+  alias SymphonyElixir.Observability.Notifications
+  alias SymphonyElixirWeb.{Endpoint, Presenter}
 
   @impl true
   def mount(params, _session, socket) do
@@ -18,7 +19,7 @@ defmodule SymphonyElixirWeb.IssueLive do
 
     _ =
       if connected?(socket) do
-        :ok = ObservabilityPubSub.subscribe()
+        :ok = Notifications.subscribe()
       end
 
     {:ok, socket}

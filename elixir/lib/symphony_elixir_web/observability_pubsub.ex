@@ -1,25 +1,13 @@
 defmodule SymphonyElixirWeb.ObservabilityPubSub do
   @moduledoc """
-  PubSub helpers for observability dashboard updates.
+  Compatibility wrapper for observability dashboard updates.
   """
 
-  @default_pubsub SymphonyElixir.PubSub
-  @topic "observability:dashboard"
-  @update_message :observability_updated
+  alias SymphonyElixir.Observability.Notifications
 
   @spec subscribe(atom()) :: :ok | {:error, {:already_registered, pid()}}
-  def subscribe(pubsub \\ @default_pubsub) do
-    Phoenix.PubSub.subscribe(pubsub, @topic)
-  end
+  def subscribe(pubsub \\ SymphonyElixir.PubSub), do: Notifications.subscribe(pubsub)
 
   @spec broadcast_update(atom()) :: :ok | {:error, term()}
-  def broadcast_update(pubsub \\ @default_pubsub) do
-    case Process.whereis(pubsub) do
-      pid when is_pid(pid) ->
-        Phoenix.PubSub.broadcast(pubsub, @topic, @update_message)
-
-      _ ->
-        :ok
-    end
-  end
+  def broadcast_update(pubsub \\ SymphonyElixir.PubSub), do: Notifications.broadcast_update(pubsub)
 end

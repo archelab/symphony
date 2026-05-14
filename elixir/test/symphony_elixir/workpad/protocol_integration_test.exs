@@ -38,7 +38,7 @@ defmodule SymphonyElixir.Workpad.ProtocolIntegrationTest do
       {% endfor %}
       """
 
-    write_github_workflow_file!(Workflow.workflow_file_path(),
+    write_workflow_file!(Workflow.workflow_file_path(),
       agent_workpad_enabled: true,
       codex_model: model,
       prompt: workpad_prompt
@@ -59,11 +59,20 @@ defmodule SymphonyElixir.Workpad.ProtocolIntegrationTest do
         blocked_by: []
       })
 
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
     # 2. Start the orchestrator.
     orchestrator_name = Module.concat(__MODULE__, :Orchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
+      if is_nil(previous_memory_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_memory_issues)
+      end
+
       if Process.alive?(pid) do
         Process.exit(pid, :normal)
       end
@@ -71,6 +80,8 @@ defmodule SymphonyElixir.Workpad.ProtocolIntegrationTest do
 
     initial_state = :sys.get_state(pid)
     ref = make_ref()
+    worker_pid = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> if Process.alive?(worker_pid), do: Process.exit(worker_pid, :kill) end)
     started_at = DateTime.utc_now()
     dispatched_at = DateTime.to_iso8601(started_at)
 
@@ -79,7 +90,7 @@ defmodule SymphonyElixir.Workpad.ProtocolIntegrationTest do
     # field is filled in by the `:codex_thread_started` handler once
     # `AppServer.start_session/2` returns.
     running_entry = %{
-      pid: self(),
+      pid: worker_pid,
       ref: ref,
       identifier: issue_identifier,
       issue: issue,
@@ -108,7 +119,7 @@ defmodule SymphonyElixir.Workpad.ProtocolIntegrationTest do
     assert %{thread_id: ^first_thread_id} = Map.fetch!(state_with_thread.running, issue_id)
 
     # 4. Simulate normal worker exit (`:agent_exit_normal` per SPEC §13.1).
-    send(pid, {:DOWN, ref, :process, self(), :normal})
+    send(pid, {:DOWN, ref, :process, worker_pid, :normal})
     Process.sleep(50)
 
     state_after_first = :sys.get_state(pid)
