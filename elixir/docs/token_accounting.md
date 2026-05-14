@@ -228,6 +228,13 @@ Ignore these for accounting:
 
 Do not treat generic `params.usage` as equivalent to a cumulative thread total unless the event type makes that meaning explicit.
 
+## Implementation Location
+
+`SymphonyElixir.Codex.Telemetry` is the single source of truth for Codex token
+usage extraction, rate-limit extraction, and user-facing event summaries.
+`SymphonyElixir.Codex.AppServer` remains the protocol Adapter; it should emit
+raw messages and let `Codex.Telemetry` normalize accounting semantics.
+
 ### Algorithm
 
 #### If an absolute total is present

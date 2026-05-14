@@ -19,10 +19,12 @@ them against a **dedicated smoke project**, not a production one.
 | E2E-4  | Closing the underlying Issue mid-run is handled as terminal. Race-prone with `max_turns=1` — accepts PARTIAL. |
 | E2E-5  | A CLOSED issue at Agent Ready is **never dispatched** (terminal-OR rule at the dispatch gate). |
 | E2E-6  | A project item without a Status is **never dispatched**. |
-| E2E-7  | A parent issue with an OPEN sub-issue child is gated. Closing the child unblocks the parent. **Currently failing** — see Notes below. |
+| E2E-7  | A parent issue with an OPEN sub-issue child is gated. Closing the child unblocks the parent. |
 | E2E-8  | The `github_graphql` Codex tool can be called by the agent to post an issue comment end-to-end. |
 | E2E-9  | After a turn completes, flipping Status to Rework re-dispatches the item with the `## Continuation context` section rendered and `Prior session ended at <ts>`. |
 | E2E-10 | Agent Workpad Protocol (SPEC §11.8) round-trips: with `agent.workpad.enabled: true` + a strong `codex.model`, the first dispatch posts a `<!-- symphony-workpad:v1 -->` comment via `addComment`; flipping Status → Done → Rework re-dispatches; the second prompt rolls out with `prior_sessions[0]` referencing the first session's `thread_id`. |
+| E2E-11 | A blocked item must post a separate `## Blocker report` before moving to Blocked. |
+| E2E-12 | Spawned agents inherit GitHub auth without needing to source `~/.zshrc`. |
 
 ## Prerequisites
 
@@ -81,20 +83,15 @@ The driver:
   could not be observed. Common cause: `max_turns: 1` makes the worker exit
   faster than the polling reconcile tick can run, so the orchestrator handles
   the transition via the dispatch-gate filter instead. End behavior is correct.
-- **SKIP**: an environmental dependency was missing (e.g. sub-issues API on
-  E2E-7 is unavailable in the repo).
+- **SKIP**: an environmental dependency was missing.
 - **FAIL**: a real regression.
 
 ## Notes / known issues
 
-- **E2E-7 (dependency gating)**: this case currently FAILs against
-  `archelab/symphony` because the GitHub adapter
-  (`lib/symphony_elixir/github/adapter.ex`) queries the `trackedIssues` field
-  for blockers, but the newer GitHub sub-issues hierarchy populates the
-  `subIssues` field instead. The two are different relations and a sub-issue
-  link does not appear in `trackedIssues`. Fix path: extend the candidate
-  query to also include `subIssues { nodes { number state } }` and merge into
-  the same `blocked_by` list in `blocked_by_from_refresh/1`.
+- **E2E-7 (dependency gating)**: the GitHub adapter reads native `blockedBy`,
+  legacy `trackedIssues`, and GitHub sub-issue `subIssues`, then merges them
+  into the normalized `blocked_by` list. A failure here is a regression in
+  dependency discovery or status gating, not an expected harness limitation.
 
 - **E2E-8**: gpt-5.4-mini at minimal reasoning ignores in-prompt instructions
   ~always. Use `SYMPHONY_E2E_E2E8_MODEL=gpt-5.4 SYMPHONY_E2E_E2E8_REASON=low`
